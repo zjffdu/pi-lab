@@ -21,7 +21,6 @@ Read the relevant roadmap before starting or resuming a lab.
 ## Phase 2 Labs
 
 - [Lab 07 — Durable AgentHarness Session](lab-07-durable-harness-session/README.md)
-- [Lab 08 — Crash Recovery](lab-08-crash-recovery/README.md)
 - [Lab 09 — Tool Replay Safety](lab-09-tool-replay-safety/README.md)
 
 Each lab is an independent Node.js project with its own dependencies, tests, and acceptance criteria.

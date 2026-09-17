@@ -1,0 +1,38 @@
+[
+  {
+    "containerNo": "MSKU1234567",
+    "eventType": "GATE_IN",
+    "timestamp": "2026-09-09T22:15:00Z",
+    "location": "CNSHA"
+  },
+  {
+    "containerNo": "MSKU1234567",
+    "eventType": "LOAD",
+    "timestamp": "2026-09-10T14:30:00Z",
+    "location": "CNSHA"
+  },
+  {
+    "containerNo": "MSKU1234567",
+    "eventType": "DEPARTURE",
+    "timestamp": "2026-09-10T15:00:00Z",
+    "location": "CNSHA"
+  },
+  {
+    "containerNo": "MSKU7654321",
+    "eventType": "GATE_IN",
+    "timestamp": "2026-09-11T20:00:00Z",
+    "location": "SGSIN"
+  },
+  {
+    "containerNo": "MSKU7654321",
+    "eventType": "LOAD",
+    "timestamp": "2026-09-12T04:45:00Z",
+    "location": "SGSIN"
+  },
+  {
+    "containerNo": "MSKU7654321",
+    "eventType": "DEPARTURE",
+    "timestamp": "2026-09-12T05:30:00Z",
+    "location": "SGSIN"
+  }
+]

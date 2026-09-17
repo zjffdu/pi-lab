@@ -76,8 +76,8 @@ one lab and see the complete experiment without resolving a hidden shared runtim
 
 | Lab | Focus | Status |
 | --- | --- | --- |
-| 07 | Durable Harness Session | Complete |
-| 08 | Crash Recovery | Complete |
+| 07 | Durable Harness Session | In progress |
+| 08 | Crash Recovery | Planned |
 | 09 | Tool Replay Safety | Complete |
 | 10 | Context Compaction | Planned |
 | 11 | Session Tree | Planned |

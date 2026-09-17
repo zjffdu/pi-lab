@@ -1,0 +1,8 @@
+# Durable JSONL sessions written by this lab's CLI and by any test that does not use a
+# temp directory. Treat this as runtime evidence, not source — never hand-edit it, and
+# never commit it: it is local proof for one learner's run, not shared fixture data.
+session-data/
+
+# Local attempt log and outbox fixture the demo script writes and resets on every run —
+# runtime evidence, not source.
+runtime-evidence/
