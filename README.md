@@ -2,11 +2,24 @@
 
 Small, self-contained projects for learning Pi one runtime concept at a time.
 
-Read the [six-lab roadmap](ROADMAP.md) before starting or resuming a lab.
+## Roadmaps
+
+- [Phase 1 — Agent execution semantics (Labs 01–06)](ROADMAP.md)
+- [Phase 2 — Durable agent runtime (Labs 07–14)](ROADMAP-PHASE-2.md)
+
+Read the relevant roadmap before starting or resuming a lab.
 
 ## Labs
 
 - [Lab 01 — Pi Agent Loop](lab-01-pi-agent-loop/README.md)
 - [Lab 02 — Teams Transport, No Agent Yet](lab-02-teams-echo/README.md)
+- [Lab 03 — Teams to Pi](lab-03-teams-pi/README.md)
+- [Lab 04 — Multi-tool Shipment Investigation](lab-04-multi-tool-investigation/README.md)
+- [Lab 05 — Multi-turn In-memory Sessions](lab-05-multi-turn-sessions/README.md)
+- [Lab 06 — Failures and Concurrency](lab-06-failures-and-concurrency/README.md)
+
+## Phase 2 Labs
+
+- [Lab 07 — Durable AgentHarness Session](lab-07-durable-harness-session/README.md)
 
 Each lab is an independent Node.js project with its own dependencies, tests, and acceptance criteria.

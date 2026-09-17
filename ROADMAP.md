@@ -95,7 +95,7 @@ user prompt
 - Teams and HTTP transport.
 - Multiple tools.
 - Multi-turn conversation state.
-- Persistence, `AgentSession`, and `AgentHarness`.
+- Persistent `Session` storage and `AgentHarness`.
 - Steering, follow-up, and parallel tool execution.
 
 ### Prediction gate
@@ -327,7 +327,7 @@ conversation B -> Agent B -> transcript B
 ### Explicitly excluded
 
 - Database or file-backed session persistence.
-- `AgentSession`, `AgentHarness`, SQLite, compaction, and recovery.
+- Persistent `Session` storage, `AgentHarness`, SQLite, compaction, and recovery.
 - Simultaneous messages in one conversation; that belongs to Lab 06.
 - SSO and authorization identity.
 
@@ -418,9 +418,10 @@ Predict the ordering of start, end, tool-result, steering, follow-up, and `agent
 
 ## After Lab 06
 
-Only after all six labs are complete should a new roadmap decide whether to introduce:
+Continue with [Phase 2 — Durable Agent Runtime](ROADMAP-PHASE-2.md) only after all
+six Phase 1 labs are complete. Phase 2 introduces these topics one at a time:
 
-- persistent `AgentSession`
+- persistent `Session` storage with `JsonlSessionRepo`
 - durable `AgentHarness`
 - SQLite or another session backend
 - real Teams sideloading and tenant authentication
