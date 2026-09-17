@@ -41,7 +41,7 @@ Do not inspect the expected trace yet.
 ## 2. Install dependencies
 
 ```bash
-cd labs/lab-01-pi-agent-loop
+cd lab-01-pi-agent-loop
 npm install
 ```
 
