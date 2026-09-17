@@ -1,0 +1,30 @@
+{
+  "name": "pi-lab-03-teams-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "node --use-env-proxy --import tsx src/index.ts",
+    "playground": "agentsplayground -e http://localhost:3978/api/messages -c emulator",
+    "check": "npm run typecheck && npm test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@microsoft/teams.apps": "2.1.0",
+    "dotenv": "17.2.3"
+  },
+  "devDependencies": {
+    "@microsoft/m365agentsplayground": "0.2.28",
+    "@types/node": "24.5.2",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vitest": "4.1.11"
+  }
+}
