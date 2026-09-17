@@ -79,28 +79,28 @@ These tests verify fixture lookup, structured tool output, and the unknown-booki
 npm run agent -- "What are the details for booking BK1001?"
 ```
 
-The exact wording may vary. The lifecycle should have this shape:
+The exact wording may vary. `src/trace-logger.ts` renders the event stream as an indented
+agent/turn/tool tree — `▶`/`◀` mark a span opening and closing, aligned at the same indent —
+rather than one flat `[Pi] ...` line per event, so the nesting itself is the trace. The
+lifecycle should have this shape (shape of one recorded run; call id and answer text elided):
 
 ```text
-[Pi] agent_start
-[Pi] turn_start #1
-[Pi] message_start role=user
-[Pi] message_end role=user
-[Pi] message_start role=assistant
-[Pi] message_end role=assistant
-[Tool] start get_booking args={"bookingNo":"BK1001"}
-[Tool] end get_booking status=success
-[Pi] message_start role=toolResult
-[Pi] message_end role=toolResult
-[Pi] turn_end #1 tool_results=1
-[Pi] turn_start #2
-...
-[Assistant] ...fixture-backed answer...
-[Pi] turn_end #2 tool_results=0
-[Pi] agent_end
+▶ agent
+  ▶ turn #1
+    user       "What are the details for booking BK1001?"
+    assistant (tool calls: get_booking)
+    ▶ tool_start get_booking call=call_00_6IQC8... args={"bookingNo":"BK1001"}
+    ◀ tool_end get_booking status=success
+    toolResult get_booking status=success
+  ◀ turn_end #1 tool_results=1
+  ▶ turn #2
+    [Assistant] Booking BK1001 details:
+...fixture-backed answer...
+  ◀ turn_end #2 tool_results=0
+◀ agent_end
 ```
 
-The important invariant is not the wording. It is that the tool result appears before the second turn and the final answer uses fixture evidence.
+The important invariant is not the wording. It is that the tool result appears before the second turn and the final answer uses fixture evidence. Turn #1's assistant line varies with the model: it prints `assistant (tool calls: ...)` when the model goes straight to the tool call with no text, or `[Assistant] <preamble text>` when the model adds a text preamble before calling the tool.
 
 ## 6. Inject a failure
 
@@ -137,11 +137,17 @@ Answer these questions using your console output:
 src/booking-repository.ts  local fixture lookup
 src/get-booking-tool.ts    Pi AgentTool adapter
 src/create-agent.ts        model, prompt, and Agent construction
-src/trace-logger.ts        lifecycle observation
+src/trace-logger.ts        indented agent/turn/tool tree logger
 src/cli.ts                 terminal entrypoint
 data/bookings.json         deterministic evidence
 tests/                     tests that do not call an LLM
 ```
+
+## Design decisions
+
+- Keep the model provider configurable so provider setup is not confused with the Agent Loop.
+- Keep tool lookup deterministic; only the model's tool selection and synthesis are non-deterministic.
+- Keep this lab independent from later lab folders so its behavior remains reproducible.
 
 ## Troubleshooting
 
