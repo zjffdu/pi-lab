@@ -24,6 +24,16 @@ function formatElapsed(ms: number): string {
   return `+${ms.toFixed(2)}ms`;
 }
 
+// Every printed line starts with this elapsed time, so its width has to stay
+// constant across the whole run — otherwise, as elapsed grows from "+0.00ms"
+// to "+5878.13ms", the text after it (including the tree indentation) drifts
+// out of column with earlier lines. 11 chars covers up to "+99999.99ms"
+// (~100s), far past any run in this lab. Only used for that line-start
+// prefix; the inline start=/end= values inside a [Timeline] row stay compact.
+function formatElapsedPrefix(ms: number): string {
+  return formatElapsed(ms).padStart(11);
+}
+
 /**
  * Lab 06's logger folds together everything the earlier labs logged separately: Lab 01's
  * indented agent/turn/tool tree (a tool call is deliberately not its own push/pop span —
@@ -52,7 +62,8 @@ export function createResilienceTraceLogger(
 
   return (event) => {
     const elapsedMs = event.type === "agent_start" ? 0 : performance.now() - startedAt;
-    const line = (text: string) => write(`[${conversationId}] t=${formatElapsed(elapsedMs)} turn=${turnNumber} ${pad()}${text}`);
+    const line = (text: string) =>
+      write(`[${conversationId}] t=${formatElapsedPrefix(elapsedMs)} turn=${turnNumber} ${pad()}${text}`);
     const open = (kind: Span, text: string) => {
       line(text);
       stack.push(kind);

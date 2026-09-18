@@ -39,12 +39,12 @@ describe("createResilienceTraceLogger", () => {
     log({ type: "agent_end", messages: [] });
 
     expect(lines).toEqual([
-      "[conversation-a] t=+0.00ms turn=0 ▶ agent",
-      "[conversation-a] t=+5.00ms turn=1   ▶ turn",
-      '[conversation-a] t=+10.00ms turn=1     ▶ tool_start get_booking call=call-1 args={"bookingNo":"BK1001"}',
-      "[conversation-a] t=+40.00ms turn=1     ◀ tool_end get_booking call=call-1 status=success",
-      "[conversation-a] t=+41.00ms turn=1   ◀ turn_end tool_results=0",
-      "[conversation-a] t=+42.00ms turn=1 ◀ agent_end",
+      "[conversation-a] t=    +0.00ms turn=0 ▶ agent",
+      "[conversation-a] t=    +5.00ms turn=1   ▶ turn",
+      '[conversation-a] t=   +10.00ms turn=1     ▶ tool_start get_booking call=call-1 args={"bookingNo":"BK1001"}',
+      "[conversation-a] t=   +40.00ms turn=1     ◀ tool_end get_booking call=call-1 status=success",
+      "[conversation-a] t=   +41.00ms turn=1   ◀ turn_end tool_results=0",
+      "[conversation-a] t=   +42.00ms turn=1 ◀ agent_end",
     ]);
   });
 
@@ -60,8 +60,8 @@ describe("createResilienceTraceLogger", () => {
     log({ type: "turn_start" });
 
     expect(lines).toEqual([
-      "[conversation-a] t=+0.00ms turn=0 ▶ agent",
-      "[conversation-a] t=+50.00ms turn=1   ▶ turn",
+      "[conversation-a] t=    +0.00ms turn=0 ▶ agent",
+      "[conversation-a] t=   +50.00ms turn=1   ▶ turn",
     ]);
   });
 
@@ -91,7 +91,7 @@ describe("createResilienceTraceLogger", () => {
     expect(now).toHaveBeenCalledTimes(2);
     const turnEndLines = lines.slice(1); // everything printed by the single turn_end call
     expect(turnEndLines.length).toBeGreaterThan(1); // a [Timeline] header plus at least one detail line
-    expect(turnEndLines.every((line) => line.startsWith("[conversation-a] t=+100.00ms"))).toBe(true);
+    expect(turnEndLines.every((line) => line.startsWith("[conversation-a] t=  +100.00ms"))).toBe(true);
   });
 
   it("shows a parallel tool batch's toolCallId, source order, and transcript order together, as flat siblings", () => {
@@ -153,18 +153,26 @@ describe("createResilienceTraceLogger", () => {
     log(turnEnd);
 
     expect(lines).toContain(
-      '[conversation-a] t=+10.00ms turn=1     ▶ tool_start get_container_events call=call-a args={"containerNo":"MSKU1234567"}',
+      '[conversation-a] t=   +10.00ms turn=1     ▶ tool_start get_container_events call=call-a args={"containerNo":"MSKU1234567"}',
     );
     expect(lines).toContain(
-      '[conversation-a] t=+15.00ms turn=1     ▶ tool_start get_port_status call=call-b args={"portCode":"CNSHA"}',
+      '[conversation-a] t=   +15.00ms turn=1     ▶ tool_start get_port_status call=call-b args={"portCode":"CNSHA"}',
     );
     expect(lines).toContain(
-      "[conversation-a] t=+121.00ms turn=1     [Timeline]   id=call-a get_container_events source=0 transcript=0 " +
+      "[conversation-a] t=  +121.00ms turn=1     [Timeline]   id=call-a get_container_events source=0 transcript=0 " +
         "start=+10.00ms end=+120.00ms duration=110.00ms",
     );
     expect(lines).toContain(
-      "[conversation-a] t=+121.00ms turn=1     [Timeline]   id=call-b get_port_status source=1 transcript=1 " +
+      "[conversation-a] t=  +121.00ms turn=1     [Timeline]   id=call-b get_port_status source=1 transcript=1 " +
         "start=+15.00ms end=+60.00ms duration=45.00ms",
     );
+
+    // The regression this fix targets: every line's prefix (before the tree
+    // indentation) must be the same length, whether elapsed is "+10.00ms" or
+    // "+121.00ms" — otherwise the ▶/◀ glyphs drift out of column as a run
+    // goes on, which is exactly what the pasted live-run trace showed.
+    const prefixLength = (line: string): number => line.indexOf("turn=") + "turn=1".length;
+    const prefixLengths = new Set(lines.map(prefixLength));
+    expect(prefixLengths.size).toBe(1);
   });
 });
