@@ -8,15 +8,16 @@ interface ToolTiming {
   endElapsedMs?: number;
 }
 
-function assistantText(message: AgentMessage): string {
-  if (message.role !== "assistant") {
-    return "";
+function textOf(message: AgentMessage): string {
+  if (message.role === "user") {
+    return typeof message.content === "string"
+      ? message.content
+      : message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
   }
-
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
+  if (message.role === "assistant" || message.role === "toolResult") {
+    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+  }
+  return "";
 }
 
 function formatElapsed(ms: number): string {
@@ -24,71 +25,87 @@ function formatElapsed(ms: number): string {
 }
 
 /**
- * Lab 06's trace logger folds together everything the earlier labs logged
- * separately: Lab 05's conversation id tag, Lab 04's per-turn tool timeline,
- * and two additions this lab's scope calls for — every tool line now carries
- * its `toolCallId`, and every elapsed time comes from `performance.now()`
- * rather than `Date.now()`. `performance.now()` is monotonic: it cannot go
- * backwards or jump if the system wall clock is adjusted mid-run, which
- * matters once a run can last long enough (an artificially slow tool, a
- * queued follow-up) for that to be a real risk.
+ * Lab 06's logger folds together everything the earlier labs logged separately: Lab 01's
+ * indented agent/turn/tool tree (a tool call is deliberately not its own push/pop span —
+ * see Lab 01's version of this file for why that matters specifically for the parallel-tool
+ * experiment below), Lab 05's conversation-id tag, and Lab 04's per-turn tool timeline — plus
+ * two additions this lab's scope calls for: every line carries a monotonic elapsed time from
+ * `performance.now()` (immune to a wall-clock adjustment mid-run, unlike `Date.now()`), and
+ * every tool line carries its own `toolCallId`.
+ *
+ * `performance.now()` is read exactly once per incoming event, at the top of its handler —
+ * not once per printed line — so a `turn_end` that emits a `[Timeline]` header plus several
+ * detail lines still reports one single, consistent elapsed time for all of them, describing
+ * "when this event fired" rather than "when this particular print statement happened to run."
  */
 export function createResilienceTraceLogger(
   conversationId: string,
   write: TraceWriter,
 ): (event: AgentEvent) => void {
+  type Span = "agent" | "turn";
+  const stack: Span[] = [];
+  const pad = () => "  ".repeat(stack.length);
   let turnNumber = 0;
   let startedAt = 0;
+
   const timings = new Map<string, ToolTiming>();
 
-  const elapsed = (): number => performance.now() - startedAt;
-
   return (event) => {
+    const elapsedMs = event.type === "agent_start" ? 0 : performance.now() - startedAt;
+    const line = (text: string) => write(`[${conversationId}] t=${formatElapsed(elapsedMs)} turn=${turnNumber} ${pad()}${text}`);
+    const open = (kind: Span, text: string) => {
+      line(text);
+      stack.push(kind);
+    };
+    const close = (kind: Span, text: string) => {
+      if (stack[stack.length - 1] === kind) {
+        stack.pop();
+      }
+      line(text);
+    };
+
     switch (event.type) {
       case "agent_start":
         startedAt = performance.now();
-        write(`[Pi][${conversationId}] t=${formatElapsed(0)} turn=${turnNumber} agent_start`);
+        open("agent", "▶ agent");
         break;
       case "turn_start":
         turnNumber += 1;
-        write(`[Pi][${conversationId}] t=${formatElapsed(elapsed())} turn=${turnNumber} turn_start`);
-        break;
-      case "message_start":
-        write(
-          `[Pi][${conversationId}] t=${formatElapsed(elapsed())} turn=${turnNumber} ` +
-            `message_start role=${event.message.role}`,
-        );
+        open("turn", "▶ turn");
         break;
       case "message_end": {
-        write(
-          `[Pi][${conversationId}] t=${formatElapsed(elapsed())} turn=${turnNumber} ` +
-            `message_end role=${event.message.role}`,
-        );
-        const text = assistantText(event.message);
-        if (text) {
-          write(`[Assistant][${conversationId}] ${text}`);
+        const message = event.message;
+        if (message.role === "user") {
+          line(`user       "${textOf(message)}"`);
+        } else if (message.role === "toolResult") {
+          line(`toolResult ${message.toolName} status=${message.isError ? "error" : "success"}`);
+        } else if (message.role === "assistant") {
+          const text = textOf(message);
+          if (message.errorMessage) {
+            line(`assistant (${message.stopReason}) ${message.errorMessage}`);
+          } else if (text) {
+            line(`[Assistant] ${text}`);
+          } else {
+            const toolCalls = message.content.filter((block) => block.type === "toolCall");
+            line(
+              toolCalls.length
+                ? `assistant (tool calls: ${toolCalls.map((call) => call.name).join(", ")})`
+                : "assistant (empty)",
+            );
+          }
         }
         break;
       }
-      case "tool_execution_start": {
-        const elapsedMs = elapsed();
+      case "tool_execution_start":
         timings.set(event.toolCallId, { toolName: event.toolName, startElapsedMs: elapsedMs });
-        write(
-          `[Tool][${conversationId}] t=${formatElapsed(elapsedMs)} turn=${turnNumber} ` +
-            `id=${event.toolCallId} start ${event.toolName} args=${JSON.stringify(event.args)}`,
-        );
+        line(`▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
         break;
-      }
       case "tool_execution_end": {
-        const elapsedMs = elapsed();
         const timing = timings.get(event.toolCallId);
         if (timing) {
           timing.endElapsedMs = elapsedMs;
         }
-        write(
-          `[Tool][${conversationId}] t=${formatElapsed(elapsedMs)} turn=${turnNumber} ` +
-            `id=${event.toolCallId} end ${event.toolName} status=${event.isError ? "error" : "success"}`,
-        );
+        line(`◀ tool_end ${event.toolName} call=${event.toolCallId} status=${event.isError ? "error" : "success"}`);
         break;
       }
       case "turn_end": {
@@ -98,7 +115,7 @@ export function createResilienceTraceLogger(
             : [];
 
         if (sourceOrder.length > 0) {
-          write(`[Timeline][${conversationId}] turn=${turnNumber} tool_calls=${sourceOrder.length}`);
+          line(`[Timeline] tool_calls=${sourceOrder.length}`);
           for (const toolCallId of sourceOrder) {
             const timing = timings.get(toolCallId);
             const transcriptOrder = event.toolResults.findIndex(
@@ -108,23 +125,21 @@ export function createResilienceTraceLogger(
             const start = timing?.startElapsedMs ?? -1;
             const end = timing?.endElapsedMs ?? -1;
             const duration = timing?.endElapsedMs !== undefined ? end - start : -1;
-            write(
-              `[Timeline][${conversationId}]   id=${toolCallId} ${timing?.toolName ?? "unknown"} ` +
-                `source=${source} transcript=${transcriptOrder} start=${formatElapsed(start)} ` +
-                `end=${formatElapsed(end)} duration=${duration.toFixed(2)}ms`,
+            line(
+              `[Timeline]   id=${toolCallId} ${timing?.toolName ?? "unknown"} source=${source} ` +
+                `transcript=${transcriptOrder} start=${formatElapsed(start)} end=${formatElapsed(end)} ` +
+                `duration=${duration.toFixed(2)}ms`,
             );
           }
         }
 
-        write(
-          `[Pi][${conversationId}] t=${formatElapsed(elapsed())} turn=${turnNumber} ` +
-            `turn_end tool_results=${event.toolResults.length}`,
-        );
+        close("turn", `◀ turn_end tool_results=${event.toolResults.length}`);
         break;
       }
       case "agent_end":
-        write(`[Pi][${conversationId}] t=${formatElapsed(elapsed())} turn=${turnNumber} agent_end`);
+        close("agent", "◀ agent_end");
         break;
+      case "message_start":
       case "message_update":
       case "tool_execution_update":
         break;

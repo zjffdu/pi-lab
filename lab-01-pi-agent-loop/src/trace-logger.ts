@@ -24,7 +24,18 @@ function textOf(message: AgentMessage): string {
  * sees really happened exactly once, live.
  */
 export function createTraceLogger(write: TraceWriter): (event: AgentEvent) => void {
-  type Span = "agent" | "turn" | "tool";
+  // Only "agent" and "turn" are genuine LIFO spans: a lab-01 run always has at most one of
+  // each open at a time. A tool call is deliberately NOT pushed onto this stack — it is
+  // printed as a plain line at the CURRENT depth (a child of whatever turn is open), same as
+  // a message line. That matters once a turn can have more than one tool call in flight at
+  // once (Lab 04/06 both exercise real parallel tool execution): two overlapping
+  // tool_execution_start/end pairs are siblings, not nested inside each other, so treating
+  // "tool" as its own push/pop span would either corrupt every indent after a later
+  // tool_execution_end pops the wrong entry, or falsely draw one concurrent tool call as
+  // "inside" another. A flat, chronologically-ordered list of tool lines — each already
+  // self-identifying by its own toolCallId/toolName — is the correct shape for that case,
+  // and it degrades to visually identical output for the common single-tool case.
+  type Span = "agent" | "turn";
   const stack: Span[] = [];
   const pad = () => "  ".repeat(stack.length);
   const open = (kind: Span, text: string) => {
@@ -77,10 +88,10 @@ export function createTraceLogger(write: TraceWriter): (event: AgentEvent) => vo
         break;
       }
       case "tool_execution_start":
-        open("tool", `▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
+        write(`${pad()}▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
         break;
       case "tool_execution_end":
-        close("tool", `◀ tool_end ${event.toolName} status=${event.isError ? "error" : "success"}`);
+        write(`${pad()}◀ tool_end ${event.toolName} status=${event.isError ? "error" : "success"}`);
         break;
       case "turn_end":
         close("turn", `◀ turn_end #${turnNumber} tool_results=${event.toolResults.length}`);

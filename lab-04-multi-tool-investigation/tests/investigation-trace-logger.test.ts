@@ -8,7 +8,7 @@ describe("createInvestigationTraceLogger", () => {
     vi.useRealTimers();
   });
 
-  it("makes the agent, turn, and tool lifecycle visible", () => {
+  it("renders the agent/turn/tool lifecycle as an indented tree", () => {
     const lines: string[] = [];
     const log = createInvestigationTraceLogger((line) => lines.push(line));
 
@@ -27,18 +27,20 @@ describe("createInvestigationTraceLogger", () => {
       result: {},
       isError: false,
     });
+    log({ type: "turn_end", message: { role: "assistant", content: [] } as never, toolResults: [] });
     log({ type: "agent_end", messages: [] });
 
     expect(lines).toEqual([
-      "[Pi] agent_start",
-      "[Pi] turn_start #1",
-      '[Tool] start get_booking args={"bookingNo":"BK1001"}',
-      "[Tool] end get_booking status=success",
-      "[Pi] agent_end",
+      "▶ agent",
+      "  ▶ turn #1",
+      '    ▶ tool_start get_booking call=call-1 args={"bookingNo":"BK1001"}',
+      "    ◀ tool_end get_booking status=success",
+      "  ◀ turn_end #1 tool_results=0",
+      "◀ agent_end",
     ]);
   });
 
-  it("orders a parallel tool batch by source position while exposing real completion timing", () => {
+  it("orders a parallel tool batch by source position while exposing real completion timing, as flat siblings", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
 
@@ -64,7 +66,8 @@ describe("createInvestigationTraceLogger", () => {
       args: { portCode: "CNSHA" },
     });
 
-    // get_port_status finishes first even though it started second.
+    // get_port_status finishes first even though it started second — a genuine overlap, not
+    // a nesting relationship, which is exactly why neither tool_start pushed its own span.
     vi.setSystemTime(60);
     log({
       type: "tool_execution_end",
@@ -102,16 +105,16 @@ describe("createInvestigationTraceLogger", () => {
     log(turnEnd);
 
     expect(lines).toEqual([
-      "[Pi] agent_start",
-      "[Pi] turn_start #1",
-      '[Tool] start get_container_events args={"containerNo":"MSKU1234567"}',
-      '[Tool] start get_port_status args={"portCode":"CNSHA"}',
-      "[Tool] end get_port_status status=success",
-      "[Tool] end get_container_events status=success",
-      "[Timeline] turn #1 tool_calls=2",
-      "[Timeline]   get_container_events source=0 transcript=0 start=+10ms end=+120ms duration=110ms",
-      "[Timeline]   get_port_status source=1 transcript=1 start=+15ms end=+60ms duration=45ms",
-      "[Pi] turn_end #1 tool_results=2",
+      "▶ agent",
+      "  ▶ turn #1",
+      '    ▶ tool_start get_container_events call=call-a args={"containerNo":"MSKU1234567"}',
+      '    ▶ tool_start get_port_status call=call-b args={"portCode":"CNSHA"}',
+      "    ◀ tool_end get_port_status status=success",
+      "    ◀ tool_end get_container_events status=success",
+      "    [Timeline] tool_calls=2",
+      "    [Timeline]   get_container_events source=0 transcript=0 start=+10ms end=+120ms duration=110ms",
+      "    [Timeline]   get_port_status source=1 transcript=1 start=+15ms end=+60ms duration=45ms",
+      "  ◀ turn_end #1 tool_results=2",
     ]);
   });
 });

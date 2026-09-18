@@ -89,9 +89,13 @@ async function main(): Promise<void> {
     turn1.lines.some((line) => parseCheckpointName(line) === "tool_dispatched"),
     "turn 1 should have printed the tool_dispatched checkpoint before being killed",
   );
+  // A model may emit interstitial assistant text alongside its tool call (e.g. "I'll look
+  // that up.") before the checkpoint — that is not a final answer. What must never appear
+  // is the CLI's own terminal "[Operation] operationId=..." line, which logResult() only
+  // prints after prompt() has resolved — impossible for a process that was SIGKILLed first.
   assert(
-    !turn1.lines.some((line) => line.includes("[Assistant]")),
-    "turn 1 must not have produced a final assistant answer — it was killed before the tool settled",
+    !turn1.lines.some((line) => line.startsWith("[Operation] operationId=")),
+    "turn 1 must not have reached a terminal operation result — it was killed before the tool settled",
   );
 
   console.log(`\n=== Step 2: reopen and resume the interrupted operation (session=${sessionId}) ===`);

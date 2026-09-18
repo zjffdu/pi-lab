@@ -30,7 +30,7 @@ src/
   booking-repository.ts   fixture lookup, copied from Lab 01
   get-booking-tool.ts      the one tool, copied from Lab 01
   create-agent.ts          builds a fresh Pi Agent for one request
-  pi-trace-logger.ts        Pi lifecycle logging, prefixed [Pi][req:<id>]
+  pi-trace-logger.ts        Indented agent/turn/tool tree logger, every line tagged [Pi][req:<id>]
   agent-runner.ts          the AgentRunner boundary — never rejects
   teams-trace-logger.ts     Teams lifecycle logging, prefixed [Teams][req:<id>]
   message-handler.ts        pure delegation: trace + call the runner
@@ -106,19 +106,25 @@ Ask:
 What are the details for BK1001?
 ```
 
-Expected terminal trace (illustrative — the exact wording of the final answer varies by model):
+`pi-trace-logger.ts` renders the same indented agent/turn/tool tree as Lab 01's logger, with
+every line tagged `[Pi][req:<id>]` — load-bearing here, since this server can have more than
+one Teams activity in flight at once. Expected terminal trace (illustrative — the exact
+wording of the final answer varies by model):
 
 ```text
 [Teams][req:<id>] activity_received type=message conversation=<conv> text="What are the details for BK1001?"
-[Pi][req:<id>] agent_start
-[Pi][req:<id>] turn_start #1
-[Pi][req:<id>] tool_start get_booking args={"bookingNo":"BK1001"}
-[Pi][req:<id>] tool_end get_booking status=success
-[Pi][req:<id>] turn_end #1 tool_results=1
-[Pi][req:<id>] turn_start #2
-[Pi][req:<id>] assistant_text ...
-[Pi][req:<id>] turn_end #2 tool_results=0
-[Pi][req:<id>] agent_end
+[Pi][req:<id>] ▶ agent
+[Pi][req:<id>]   ▶ turn #1
+[Pi][req:<id>]     user       "What are the details for BK1001?"
+[Pi][req:<id>]     [Assistant] I'll look that up.
+[Pi][req:<id>]     ▶ tool_start get_booking call=call-1 args={"bookingNo":"BK1001"}
+[Pi][req:<id>]     ◀ tool_end get_booking status=success
+[Pi][req:<id>]     toolResult get_booking status=success
+[Pi][req:<id>]   ◀ turn_end #1 tool_results=1
+[Pi][req:<id>]   ▶ turn #2
+[Pi][req:<id>]     [Assistant] ...fixture-backed answer...
+[Pi][req:<id>]   ◀ turn_end #2 tool_results=0
+[Pi][req:<id>] ◀ agent_end
 [Teams][req:<id>] reply_sent conversation=<conv> text="..."
 ```
 

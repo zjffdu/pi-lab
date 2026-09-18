@@ -139,10 +139,9 @@ describe("createTraceLogger", () => {
   });
 
   it("does not let a tool_end with no matching tool_start reduce the enclosing turn's indent", () => {
-    // This is the never-replay recovery shape from Lab 09: a closing event can arrive with
-    // nothing matching on top of the span stack. Phase 1's plain Agent does not actually
-    // produce this sequence itself, but the logger's close() guard is shared code and this
-    // proves it degrades safely rather than corrupting every indent after it.
+    // Tool lines never push/pop a span of their own (see the file-level comment in
+    // trace-logger.ts) — this proves a lone, unmatched tool_execution_end still prints as a
+    // plain child of the open turn instead of corrupting the turn's own closing indent.
     const lines: string[] = [];
     const log = createTraceLogger((line) => lines.push(line));
 
@@ -162,6 +161,39 @@ describe("createTraceLogger", () => {
       "▶ agent",
       "  ▶ turn #1",
       "    ◀ tool_end get_booking status=error",
+      "  ◀ turn_end #1 tool_results=0",
+      "◀ agent_end",
+    ]);
+  });
+
+  it("renders two overlapping tool calls as flat siblings instead of nesting one inside the other", () => {
+    // Lab 04 and Lab 06 both exercise real parallel tool execution: the model can request
+    // two tool calls in one turn, and their execution windows can genuinely overlap
+    // (start A, start B, end A, end B). If "tool" were its own push/pop span, this exact
+    // interleaving would pop the wrong stack entry on `end A` and throw off every indent
+    // after it. Printing every tool line at the turn's own child depth sidesteps that: the
+    // four lines stay flat and in event order, and each remains self-identifying by its own
+    // toolCallId/toolName — exactly how a reader would disambiguate them today regardless of
+    // indentation.
+    const lines: string[] = [];
+    const log = createTraceLogger((line) => lines.push(line));
+
+    log({ type: "agent_start" });
+    log({ type: "turn_start" });
+    log({ type: "tool_execution_start", toolCallId: "call-a", toolName: "get_container_events", args: {} });
+    log({ type: "tool_execution_start", toolCallId: "call-b", toolName: "get_port_status", args: {} });
+    log({ type: "tool_execution_end", toolCallId: "call-a", toolName: "get_container_events", result: {}, isError: false });
+    log({ type: "tool_execution_end", toolCallId: "call-b", toolName: "get_port_status", result: {}, isError: false });
+    log({ type: "turn_end", message: assistantMessage(""), toolResults: [] });
+    log({ type: "agent_end", messages: [] });
+
+    expect(lines).toEqual([
+      "▶ agent",
+      "  ▶ turn #1",
+      "    ▶ tool_start get_container_events call=call-a args={}",
+      "    ▶ tool_start get_port_status call=call-b args={}",
+      "    ◀ tool_end get_container_events status=success",
+      "    ◀ tool_end get_port_status status=success",
       "  ◀ turn_end #1 tool_results=0",
       "◀ agent_end",
     ]);

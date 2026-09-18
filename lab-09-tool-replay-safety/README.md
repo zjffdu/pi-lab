@@ -165,29 +165,50 @@ local evidence files under `runtime-evidence/`:
   is already durable — then resumes twice.
 
 Actual output from one recorded run (trimmed to the load-bearing lines; ids are unique per
-run — the shape, the `recovery=true` tags, and the checkpoint ordering are what to compare
+run — the shape, the `↺` recovery markers, and the checkpoint ordering are what to compare
 against your own run):
+
+The trace logger (`src/harness-trace-logger.ts`) renders the event stream as an indented
+run/turn/tool tree instead of one flat line per event — `▶`/`◀` mark a span opening/closing
+(aligned at the same indent, bracket-style), `↺` marks an event fired while the harness is
+*catching up* to durable state during recovery rather than producing it live. The tree shape
+is itself evidence: notice the safe scenario's recovery block contains a `↺ ▶ tool_start`
+(a real second dispatch) while the never scenario's jumps straight from `↺ ▶ turn` to a
+`↺ ◀ tool_end` with **no** `↺ ▶ tool_start` in between — recovery never dispatched it again.
 
 ```text
 ########## Scenario: safe replay (get_container_events) ##########
 
 === Step 1: start a turn that will be killed mid-flight ===
 [child:stdout] [Harness] lane=main openOperationsOnAttach=0
-[child:stdout] [User] What are the movement events for container MSKU1234567?
-[child:stdout] [Assistant] I'll look up the movement events for that container.
-[child:stdout] [Harness] lane=main tool_start tool=get_container_events call=call_00_4utub...
-[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_4utub... tool=get_container_events containerNo=MSKU1234567
+[child:stdout] ▶ run 01a0aff8-2716-...
+[child:stdout]   user      "What are the movement events for container MSKU1234567?" entry=01a0aff8-2716-...
+[child:stdout]   ▶ turn 01a0aff8-2719-...
+[child:stdout]     [Assistant] entry=01a0aff8-271a-... I'll look up the movement events for that container.
+[child:stdout]     ▶ tool_start get_container_events call=call_00_7IDlo... args={"containerNo":"MSKU1234567"}
+[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_7IDlo... tool=get_container_events containerNo=MSKU1234567
 [demo] turn 1 exited: code=null signal=SIGKILL
 
 === Step 2: reopen and resume the interrupted operation ===
 [child:stdout] [Harness] lane=main openOperationsOnAttach=1
-[child:stdout] [Harness] lane=main OPEN operation=01a0ae85-65a6-...
-[child:stdout] [Harness] lane=main turn_start ... recovery=true
-[child:stdout] [Harness] lane=main tool_start tool=get_container_events call=call_00_4utub... recovery=true
-[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_4utub... tool=get_container_events containerNo=MSKU1234567
-[child:stdout] [Harness] lane=main tool_end tool=get_container_events call=call_00_4utub... status=success recovery=true
-[child:stdout] [Assistant] Movement events for **MSKU1234567** (oldest first): ... GATE_IN, LOAD, DEPARTURE ...
-[child:stdout] [Resume] operationId=01a0ae85-65a6-... status=completed fromTip=null tip=01a0ae85-a678-...
+[child:stdout] [Harness] lane=main OPEN operation=01a0aff8-2716-... kind=run startedAt=...
+[child:stdout] ↺ ▶ turn 01a0aff8-2719-...
+[child:stdout]   ↺ ▶ tool_start get_container_events call=call_00_7IDlo... args={"containerNo":"MSKU1234567"}
+[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_7IDlo... tool=get_container_events containerNo=MSKU1234567
+[child:stdout]   ↺ ◀ tool_end get_container_events status=success
+[child:stdout]   ↺ toolResult get_container_events status=success entry=01a0aff8-271a-...
+[child:stdout] ↺ ◀ turn_end tool_results=1
+[child:stdout] ▶ turn 01a0aff8-65ed-...
+[child:stdout]   [Assistant] entry=01a0aff8-65ef-... Movement events for **MSKU1234567** (oldest first):
+[child:stdout]       | Event | Timestamp (UTC) | Location |
+[child:stdout]       |---|---|---|
+[child:stdout]       | GATE_IN | 2026-09-09 22:15 | CNSHA |
+[child:stdout]       | LOAD | 2026-09-10 14:30 | CNSHA |
+[child:stdout]       | DEPARTURE | 2026-09-10 15:00 | CNSHA |
+[child:stdout]       The container gated in at Shanghai, was loaded, and departed on 2026-09-10.
+[child:stdout] ◀ turn_end tool_results=0
+[child:stdout] ◀ run_end status=completed fromTip=null tip=01a0aff8-65ef-...
+[child:stdout] [Resume] operationId=01a0aff8-2716-... status=completed fromTip=null tip=01a0aff8-65ef-...
 [demo] resume 1 exited: code=0 signal=null
 
 === Step 3: resume again after settlement ===
@@ -199,23 +220,32 @@ against your own run):
 ########## Scenario: never replay (request_booking_hold) ##########
 
 === Step 1: start a turn that will be killed mid-flight ===
-[child:stdout] [User] Please place a hold on booking BK1001 for "customs review" and tell me the hold id.
-[child:stdout] [Assistant] I'll place the hold on BK1001 for customs review.
-[child:stdout] [Harness] lane=main tool_start tool=request_booking_hold call=call_00_GcpXa...
-[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_GcpXa... tool=request_booking_hold bookingNo=BK1001
-[child:stdout] [Checkpoint] effect_appended toolCallId=call_00_GcpXa... tool=request_booking_hold bookingNo=BK1001 holdId=hold-01a0ae85-b0bb-...
+[child:stdout] ▶ run 01a0aff8-6f60-...
+[child:stdout]   user      "Please place a hold on booking BK1001 for "customs review" and tell me the hold id." entry=01a0aff8-6f60-...
+[child:stdout]   ▶ turn 01a0aff8-6f63-...
+[child:stdout]     [Assistant] entry=01a0aff8-6f63-... I can only place that hold after I have a clear reason
+established in this session — and a bare "customs review" request from you is actually the
+reason you're giving, so let me proceed.
+[child:stdout]     ▶ tool_start request_booking_hold call=call_00_ADG3Y... args={"bookingNo":"BK1001","reason":"customs review"}
+[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_ADG3Y... tool=request_booking_hold bookingNo=BK1001
+[child:stdout] [Checkpoint] effect_appended toolCallId=call_00_ADG3Y... tool=request_booking_hold bookingNo=BK1001 holdId=hold-01a0aff8-6f63-...
 [demo] turn 1 exited: code=null signal=SIGKILL
 
 === Step 2: reopen and resume the interrupted operation ===
 [child:stdout] [Harness] lane=main openOperationsOnAttach=1
-[child:stdout] [Harness] lane=main OPEN operation=01a0ae85-b0b8-...
-[child:stdout] [Harness] lane=main turn_start ... recovery=true
-[child:stdout] [Harness] lane=main tool_end tool=request_booking_hold call=call_00_GcpXa... status=error recovery=true
-[child:stdout] [Assistant] The hold request for BK1001 ("customs review") was interrupted mid-execution, so the
-outcome is unknown — I can't confirm whether the hold was actually placed, and no hold id
-was returned. Per policy, I won't re-run it for this same request, since repeating a
-state-changing call could create a duplicate hold.
-[child:stdout] [Resume] operationId=01a0ae85-b0b8-... status=completed fromTip=null tip=01a0ae85-b720-...
+[child:stdout] [Harness] lane=main OPEN operation=01a0aff8-6f60-... kind=run startedAt=...
+[child:stdout] ↺ ▶ turn 01a0aff8-6f63-...
+[child:stdout]   ↺ ◀ tool_end request_booking_hold status=error
+[child:stdout]   ↺ toolResult request_booking_hold status=error entry=01a0aff8-6f63-...
+[child:stdout] ↺ ◀ turn_end tool_results=1
+[child:stdout] ▶ turn 01a0aff8-759c-...
+[child:stdout]   [Assistant] entry=01a0aff8-759d-... The hold request for booking BK1001 ("customs review") was
+interrupted mid-call, so its outcome is unknown. Per procedure I won't retry it, and I can't
+tell you a hold id — no tool result confirming one was ever returned.
+[child:stdout]       To resolve this, check the booking directly before deciding whether a fresh hold request is needed.
+[child:stdout] ◀ turn_end tool_results=0
+[child:stdout] ◀ run_end status=completed fromTip=null tip=01a0aff8-759d-...
+[child:stdout] [Resume] operationId=01a0aff8-6f60-... status=completed fromTip=null tip=01a0aff8-759d-...
 [demo] resume 1 exited: code=0 signal=null
 
 === Step 3: resume again after settlement ===
@@ -238,14 +268,14 @@ Raw `runtime-evidence/*.jsonl` from that same run:
 
 ```text
 attempts-safe.jsonl:
-{"tool":"get_container_events","toolCallId":"call_00_4utub...","invocationId":"01a0ae85-65aa-...-8bd41914e60b","detail":"MSKU1234567","at":1789634374116}
-{"tool":"get_container_events","toolCallId":"call_00_4utub...","invocationId":"01a0ae85-65aa-...-8bd41914e60b","detail":"MSKU1234567","at":1789634374605}
+{"tool":"get_container_events","toolCallId":"call_00_7IDlosf9tnR6oYz6QWDN8880","invocationId":"01a0aff8-271a-7063-80d8-83afc05db405","detail":"MSKU1234567","at":1789658671428}
+{"tool":"get_container_events","toolCallId":"call_00_7IDlosf9tnR6oYz6QWDN8880","invocationId":"01a0aff8-271a-7063-80d8-83afc05db405","detail":"MSKU1234567","at":1789658671938}
 outbox-safe.jsonl: (file does not exist — zero effects)
 
 attempts-never.jsonl:
-{"tool":"request_booking_hold","toolCallId":"call_00_GcpXa...","invocationId":"01a0ae85-b0bb-...-3500929e14bf","detail":"BK1001","at":1789634393349}
+{"tool":"request_booking_hold","toolCallId":"call_00_ADG3YA0HA0MS9n7QCDEP7493","invocationId":"01a0aff8-6f63-71df-ac39-cbe0532a0516","detail":"BK1001","at":1789658690515}
 outbox-never.jsonl:
-{"invocationId":"01a0ae85-b0bb-...-3500929e14bf","bookingNo":"BK1001","reason":"customs review","holdId":"hold-01a0ae85-b0bb-...-3500929e14bf","at":1789634393350}
+{"invocationId":"01a0aff8-6f63-71df-ac39-cbe0532a0516","bookingNo":"BK1001","reason":"customs review","holdId":"hold-01a0aff8-6f63-71df-ac39-cbe0532a0516","at":1789658690515}
 ```
 
 The two safe-scenario attempts share one `invocationId` and one `toolCallId` — the
@@ -380,7 +410,8 @@ src/request-booking-hold-tool.ts       New: state-changing, declares replay: "ne
                                         effect = one outbox append
 src/session-store.ts                   JsonlSessionRepo wiring + create-or-reopen-by-id
 src/create-harness.ts                  Model selection + both tools + AgentHarness.create()
-src/harness-trace-logger.ts            Lifecycle logging (unchanged from Lab 08)
+src/harness-trace-logger.ts            Indented run/turn/tool tree logger (replaces Lab 08's
+                                        flat one-line-per-event format for readability)
 src/cli.ts                             One invocation = one turn (--prompt) or one resume
                                         attempt (--resume) against one named session
 scripts/replay-safety-demo.ts          Deterministic parent harness: two scenarios, each

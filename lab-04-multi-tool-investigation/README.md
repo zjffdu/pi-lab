@@ -74,27 +74,40 @@ npm run agent -- "Investigate booking BK1002 for departure delay and port risk"
 
 ## 5. Happy path
 
-Ask about `BK1001` (the default question). Expected terminal trace (illustrative — exact wording and turn count vary by model):
+Ask about `BK1001` (the default question). `src/investigation-trace-logger.ts` renders the
+same indented agent/turn/tool tree as Lab 01's logger — a tool call is never its own
+push/pop span, precisely so two genuinely overlapping calls (like turn #2 below) render as
+flat siblings instead of one falsely nested inside the other; the `[Timeline]` block is what
+actually reconstructs their real start/end relationship. Actual terminal trace from one
+recorded run (exact wording and turn count vary by model):
 
 ```text
-[Pi] agent_start
-[Pi] turn_start #1
-[Tool] start get_booking args={"bookingNo":"BK1001"}
-[Tool] end get_booking status=success
-[Pi] turn_end #1 tool_results=1
-[Pi] turn_start #2
-[Tool] start get_container_events args={"containerNo":"MSKU1234567"}
-[Tool] start get_port_status args={"portCode":"CNSHA"}
-[Tool] end get_port_status status=success
-[Tool] end get_container_events status=success
-[Timeline] turn #2 tool_calls=2
-[Timeline]   get_container_events source=0 transcript=0 start=+143ms end=+512ms duration=369ms
-[Timeline]   get_port_status source=1 transcript=1 start=+148ms end=+301ms duration=153ms
-[Pi] turn_end #2 tool_results=2
-[Pi] turn_start #3
-[Assistant] ...
-[Pi] turn_end #3 tool_results=0
-[Pi] agent_end
+▶ agent
+  ▶ turn #1
+    user       "Investigate booking BK1001: is there evidence of a departure delay, and what is the port congestion risk?"
+    [Assistant] I'll start by resolving the booking details.
+    ▶ tool_start get_booking call=call_00_mtyPp... args={"bookingNo":"BK1001"}
+    ◀ tool_end get_booking status=success
+    toolResult get_booking status=success
+    [Timeline] tool_calls=1
+    [Timeline]   get_booking source=0 transcript=0 start=+728ms end=+731ms duration=3ms
+  ◀ turn_end #1 tool_results=1
+  ▶ turn #2
+    [Assistant] Now I'll fetch the container events and port status together.
+    ▶ tool_start get_container_events call=call_00_wk3uQ... args={"containerNo":"MSKU1234567"}
+    ▶ tool_start get_port_status call=call_01_d4UJG... args={"portCode":"CNSHA"}
+    ◀ tool_end get_container_events status=success
+    ◀ tool_end get_port_status status=success
+    toolResult get_container_events status=success
+    toolResult get_port_status status=success
+    [Timeline] tool_calls=2
+    [Timeline]   get_container_events source=0 transcript=0 start=+1379ms end=+1393ms duration=14ms
+    [Timeline]   get_port_status source=1 transcript=1 start=+1379ms end=+1393ms duration=14ms
+  ◀ turn_end #2 tool_results=2
+  ▶ turn #3
+    [Assistant] ...fixture-backed delay/risk analysis...
+  ◀ turn_end #3 tool_results=0
+◀ agent_end
 ```
 
 Notice that `get_port_status` can finish before `get_container_events` (its `end=` timestamp is earlier), yet both `transcript=` positions still follow the order the model requested them in (`source=`). Pi reassembles tool-result messages in assistant source order regardless of which tool physically finished first — only the timeline's start/end timestamps reveal real completion order.
@@ -109,7 +122,7 @@ Open `data/port-status.json` and temporarily remove the `CNSHA` entry (or rename
 npm run agent
 ```
 
-Observe `[Tool] end get_port_status status=error` and confirm the final answer states plainly that port status could not be found, instead of inventing a congestion level. Restore `data/port-status.json` afterward.
+Observe `◀ tool_end get_port_status status=error` and confirm the final answer states plainly that port status could not be found, instead of inventing a congestion level. Restore `data/port-status.json` afterward.
 
 ## 7. Inject a failure — slow independent tool
 

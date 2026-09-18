@@ -10,25 +10,44 @@ interface ToolTiming {
   isError?: boolean;
 }
 
-function assistantText(message: AgentMessage): string {
-  if (message.role !== "assistant") {
-    return "";
+function textOf(message: AgentMessage): string {
+  if (message.role === "user") {
+    return typeof message.content === "string"
+      ? message.content
+      : message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
   }
-
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
+  if (message.role === "assistant" || message.role === "toolResult") {
+    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+  }
+  return "";
 }
 
 /**
- * Extends the Lab 01 lifecycle trace with a per-turn timeline: for every tool
- * call resolved in that turn, its source order (position in the assistant
- * message), transcript order (position in turn_end.toolResults), start/end
- * time relative to agent_start, and duration. Source and transcript order can
- * diverge from completion order under parallel tool execution.
+ * Extends Lab 01's indented agent/turn/tool tree with a per-turn timeline: for every tool
+ * call resolved in that turn, its source order (position in the assistant message),
+ * transcript order (position in turn_end.toolResults), start/end time relative to
+ * agent_start, and duration. Source and transcript order can diverge from completion order
+ * under parallel tool execution — which is exactly why tool lines print as a flat,
+ * chronologically-ordered list at the turn's own child depth rather than as their own
+ * push/pop span (see Lab 01's version of this file for the full reasoning): two overlapping
+ * tool calls are siblings, not nested inside each other, and the `[Timeline]` block below is
+ * what actually reconstructs their real relationship, not the indentation.
  */
 export function createInvestigationTraceLogger(write: TraceWriter): (event: AgentEvent) => void {
+  type Span = "agent" | "turn";
+  const stack: Span[] = [];
+  const pad = () => "  ".repeat(stack.length);
+  const open = (kind: Span, text: string) => {
+    write(`${pad()}${text}`);
+    stack.push(kind);
+  };
+  const close = (kind: Span, text: string) => {
+    if (stack[stack.length - 1] === kind) {
+      stack.pop();
+    }
+    write(`${pad()}${text}`);
+  };
+
   let turnNumber = 0;
   let agentStartedAt = 0;
   const timings = new Map<string, ToolTiming>();
@@ -37,20 +56,33 @@ export function createInvestigationTraceLogger(write: TraceWriter): (event: Agen
     switch (event.type) {
       case "agent_start":
         agentStartedAt = Date.now();
-        write("[Pi] agent_start");
+        open("agent", "▶ agent");
         break;
       case "turn_start":
         turnNumber += 1;
-        write(`[Pi] turn_start #${turnNumber}`);
-        break;
-      case "message_start":
-        write(`[Pi] message_start role=${event.message.role}`);
+        open("turn", `▶ turn #${turnNumber}`);
         break;
       case "message_end": {
-        write(`[Pi] message_end role=${event.message.role}`);
-        const text = assistantText(event.message);
-        if (text) {
-          write(`[Assistant] ${text}`);
+        const message = event.message;
+        const prefix = pad();
+        if (message.role === "user") {
+          write(`${prefix}user       "${textOf(message)}"`);
+        } else if (message.role === "toolResult") {
+          write(`${prefix}toolResult ${message.toolName} status=${message.isError ? "error" : "success"}`);
+        } else if (message.role === "assistant") {
+          const text = textOf(message);
+          if (message.errorMessage) {
+            write(`${prefix}assistant (${message.stopReason}) ${message.errorMessage}`);
+          } else if (text) {
+            write(`${prefix}[Assistant] ${text}`);
+          } else {
+            const toolCalls = message.content.filter((block) => block.type === "toolCall");
+            write(
+              toolCalls.length
+                ? `${prefix}assistant (tool calls: ${toolCalls.map((call) => call.name).join(", ")})`
+                : `${prefix}assistant (empty)`,
+            );
+          }
         }
         break;
       }
@@ -60,7 +92,7 @@ export function createInvestigationTraceLogger(write: TraceWriter): (event: Agen
           args: event.args,
           startElapsedMs: Date.now() - agentStartedAt,
         });
-        write(`[Tool] start ${event.toolName} args=${JSON.stringify(event.args)}`);
+        write(`${pad()}▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
         break;
       case "tool_execution_end": {
         const timing = timings.get(event.toolCallId);
@@ -68,7 +100,7 @@ export function createInvestigationTraceLogger(write: TraceWriter): (event: Agen
           timing.endElapsedMs = Date.now() - agentStartedAt;
           timing.isError = event.isError;
         }
-        write(`[Tool] end ${event.toolName} status=${event.isError ? "error" : "success"}`);
+        write(`${pad()}◀ tool_end ${event.toolName} status=${event.isError ? "error" : "success"}`);
         break;
       }
       case "turn_end": {
@@ -78,7 +110,7 @@ export function createInvestigationTraceLogger(write: TraceWriter): (event: Agen
             : [];
 
         if (sourceOrder.length > 0) {
-          write(`[Timeline] turn #${turnNumber} tool_calls=${sourceOrder.length}`);
+          write(`${pad()}[Timeline] tool_calls=${sourceOrder.length}`);
           for (const toolCallId of sourceOrder) {
             const timing = timings.get(toolCallId);
             const transcriptOrder = event.toolResults.findIndex(
@@ -89,18 +121,19 @@ export function createInvestigationTraceLogger(write: TraceWriter): (event: Agen
             const end = timing?.endElapsedMs ?? -1;
             const duration = timing?.endElapsedMs !== undefined ? end - start : -1;
             write(
-              `[Timeline]   ${timing?.toolName ?? "unknown"} source=${source} transcript=${transcriptOrder} ` +
+              `${pad()}[Timeline]   ${timing?.toolName ?? "unknown"} source=${source} transcript=${transcriptOrder} ` +
                 `start=+${start}ms end=+${end}ms duration=${duration}ms`,
             );
           }
         }
 
-        write(`[Pi] turn_end #${turnNumber} tool_results=${event.toolResults.length}`);
+        close("turn", `◀ turn_end #${turnNumber} tool_results=${event.toolResults.length}`);
         break;
       }
       case "agent_end":
-        write("[Pi] agent_end");
+        close("agent", "◀ agent_end");
         break;
+      case "message_start":
       case "message_update":
       case "tool_execution_update":
         break;

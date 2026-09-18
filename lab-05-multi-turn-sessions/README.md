@@ -85,36 +85,48 @@ npm run agent -- --conversation conversation-a "What are the details for booking
 
 ## 5. Happy path
 
-Expected terminal trace for the default scenario (illustrative — exact wording and turn
-count vary by model):
+`src/session-trace-logger.ts` renders the same indented agent/turn/tool tree as Lab 01's
+logger, with every line still tagged `[conversationId]` — unlike later labs that drop that
+tag, here it is load-bearing: it is what lets you tell, at a glance, that `turn #3` below
+belongs to the *same* `conversation-a` as `turn #1`/`#2`, even though it opens a brand-new
+`▶ agent`/`◀ agent_end` bracket (one per `prompt()` call, not one per agent lifetime).
+
+Actual terminal trace from one recorded run (exact wording varies by model):
 
 ```text
 [Setup] model=deepseek/deepseek-v4-flash
 [Session] conversation=conversation-a created registry_size=1
 [User][conversation-a] What are the details for booking BK1001?
-[Pi][conversation-a] agent_start
-[Pi][conversation-a] turn_start #1
-[Tool][conversation-a] start get_booking args={"bookingNo":"BK1001"}
-[Tool][conversation-a] end get_booking status=success
-[Pi][conversation-a] turn_end #1 tool_results=1
-[Pi][conversation-a] turn_start #2
-[Assistant][conversation-a] Booking BK1001 uses container MSKU1234567 ...
-[Pi][conversation-a] turn_end #2 tool_results=0
-[Pi][conversation-a] agent_end
+[conversation-a] ▶ agent
+[conversation-a]   ▶ turn #1
+[conversation-a]     user       "What are the details for booking BK1001?"
+[conversation-a]     [Assistant] I'll look up that booking for you.
+[conversation-a]     ▶ tool_start get_booking call=call_00_YUA49... args={"bookingNo":"BK1001"}
+[conversation-a]     ◀ tool_end get_booking status=success
+[conversation-a]     toolResult get_booking status=success
+[conversation-a]   ◀ turn_end #1 tool_results=1
+[conversation-a]   ▶ turn #2
+[conversation-a]     [Assistant] Booking BK1001 details:
+- **Container:** MSKU1234567
+...
+[conversation-a]   ◀ turn_end #2 tool_results=0
+[conversation-a] ◀ agent_end
 [Session] conversation=conversation-a reused registry_size=1
 [User][conversation-a] Which container is it using?
-[Pi][conversation-a] agent_start
-[Pi][conversation-a] turn_start #3
-[Assistant][conversation-a] MSKU1234567.
-[Pi][conversation-a] turn_end #3 tool_results=0
-[Pi][conversation-a] agent_end
+[conversation-a] ▶ agent
+[conversation-a]   ▶ turn #3
+[conversation-a]     user       "Which container is it using?"
+[conversation-a]     [Assistant] Booking BK1001 uses container **MSKU1234567**.
+[conversation-a]   ◀ turn_end #3 tool_results=0
+[conversation-a] ◀ agent_end
 [Session] conversation=conversation-b created registry_size=2
 [User][conversation-b] Which container is it using?
-[Pi][conversation-b] agent_start
-[Pi][conversation-b] turn_start #1
-[Assistant][conversation-b] I don't have a booking number yet for this conversation — which booking do you mean?
-[Pi][conversation-b] turn_end #1 tool_results=0
-[Pi][conversation-b] agent_end
+[conversation-b] ▶ agent
+[conversation-b]   ▶ turn #1
+[conversation-b]     user       "Which container is it using?"
+[conversation-b]     [Assistant] Which booking number do you mean? I don't have a booking established in this conversation yet.
+[conversation-b]   ◀ turn_end #1 tool_results=0
+[conversation-b] ◀ agent_end
 ```
 
 Notice two things:

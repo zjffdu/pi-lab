@@ -167,33 +167,51 @@ Actual output from one recorded run (trimmed; entry ids, operation ids, and time
 unique per run — the shape and the `created`/`reopened`/`fromTip`/`tip` values are what to
 compare against your own run):
 
+`src/harness-trace-logger.ts` renders `harness.events` as an indented run/turn/tool tree —
+`▶`/`◀` mark a span opening and closing, aligned at the same indent — instead of one flat
+`[Harness][sessionId] ...` line per event. `cli.ts`'s own `[Session]`/`[Operation]`/`[Entry]`
+lines (unrelated to the tree) still carry the session id explicitly where it matters.
+
 ```text
 $ npm run agent -- --session conversation-a --prompt "What are the details for booking BK1001?"
-[Session] id=conversation-a created path=/.../session-data/--...--/2026-09-17T06-46-11-162Z_conversation-a.jsonl
+[Session] id=conversation-a created path=/.../session-data/--...--/2026-09-18T00-38-25-163Z_conversation-a.jsonl
 [Harness] lane=main openOperationsOnAttach=0
 [Lane] tipId(before)=null
 [User][conversation-a] What are the details for booking BK1001?
-[Harness][conversation-a] lane=main tool_start tool=get_booking call=call_00_QA1mKyTFtUO3epzpH54C8296 args={"bookingNo":"BK1001"}
-[Harness][conversation-a] lane=main tool_end tool=get_booking call=call_00_QA1mKyTFtUO3epzpH54C8296 status=success
-[Assistant][conversation-a] Here are the details for booking BK1001:
-- **Container No.:** MSKU1234567
+▶ run 01a0b1f3-4493-...
+  user      "What are the details for booking BK1001?" entry=01a0b1f3-4493-...
+  ▶ turn 01a0b1f3-4496-...
+    assistant (tool call only, no text) entry=01a0b1f3-4497-...
+    ▶ tool_start get_booking call=call_00_wy4Jp... args={"bookingNo":"BK1001"}
+    ◀ tool_end get_booking status=success
+    toolResult get_booking status=success entry=01a0b1f3-4497-...
+  ◀ turn_end tool_results=1
+  ▶ turn 01a0b1f3-47ca-...
+    [Assistant] entry=01a0b1f3-47cb-... Booking BK1001 details:
+- **Container:** MSKU1234567
 ...
-[Harness][conversation-a] lane=main run_end run=01a0ae1d-9be2-... status=completed fromTip=null tip=01a0ae1d-9eee-...a419a745e27d
-[Operation] operationId=01a0ae1d-9be2-... kind=run status=completed fromTip=null tip=01a0ae1d-9eee-...a419a745e27d ...
-[Lane] tipId(after)=01a0ae1d-9eee-...a419a745e27d
+  ◀ turn_end tool_results=0
+◀ run_end status=completed fromTip=null tip=01a0b1f3-47cb-...
+[Operation] operationId=01a0b1f3-4493-... kind=run status=completed fromTip=null tip=01a0b1f3-47cb-...
+[Lane] tipId(after)=01a0b1f3-47cb-...
 [Lane] entries=4
-[Entry] seq=4   id=...a40c3dfd5b5c parent=null           type=message role=user
-[Entry] seq=28  id=...a410a9242e78 parent=...a40c3dfd5b5c type=message role=assistant
-[Entry] seq=38  id=...a415e1dd4c87 parent=...a410a9242e78 type=message role=toolResult toolCallId=call_00_QA1mKyTFtUO3epzpH54C8296
-[Entry] seq=124 id=...a419a745e27d parent=...a415e1dd4c87 type=message role=assistant
+[Entry] seq=4   id=...a2365967b578 parent=null           type=message role=user
+[Entry] seq=28  id=...a23aebdebef4 parent=...a2365967b578 type=message role=assistant
+[Entry] seq=38  id=...a23e8b3014b5 parent=...a23aebdebef4 type=message role=toolResult toolCallId=call_00_wy4Jp...
+[Entry] seq=116 id=...a2434e9d4757 parent=...a23e8b3014b5 type=message role=assistant
 
 $ npm run agent -- --session conversation-a --prompt "Which container is it using?"
-[Session] id=conversation-a reopened path=/.../same/2026-09-17T06-46-11-162Z_conversation-a.jsonl
+[Session] id=conversation-a reopened path=/.../same/2026-09-18T00-38-25-163Z_conversation-a.jsonl
 [Harness] lane=main openOperationsOnAttach=0
-[Lane] tipId(before)=01a0ae1d-9eee-...a419a745e27d
+[Lane] tipId(before)=01a0b1f3-47cb-...
 [User][conversation-a] Which container is it using?
-[Assistant][conversation-a] Booking BK1001 uses container **MSKU1234567**.
-[Lane] tipId(after)=01a0ae1d-df61-...a0ed8b540f1f
+▶ run 01a0b1f3-4cd5-...
+  user      "Which container is it using?" entry=01a0b1f3-4cd5-...
+  ▶ turn 01a0b1f3-4cd9-...
+    [Assistant] entry=01a0b1f3-4cd9-... Booking BK1001 uses container MSKU1234567.
+  ◀ turn_end tool_results=0
+◀ run_end status=completed fromTip=01a0b1f3-47cb-... tip=01a0b1f3-4cd9-...
+[Lane] tipId(after)=01a0b1f3-4cd9-...
 [Lane] entries=6
 ```
 
@@ -208,10 +226,14 @@ Finally, `conversation-b`:
 
 ```text
 $ npm run agent -- --session conversation-b --prompt "Which container is it using?"
-[Session] id=conversation-b created path=/.../2026-09-17T06-46-34-759Z_conversation-b.jsonl
+[Session] id=conversation-b created path=/.../2026-09-18T00-38-28-778Z_conversation-b.jsonl
 [Lane] tipId(before)=null
-[Assistant][conversation-b] I don't have a booking established yet in this session, so I
-can't say which container is in use. Could you tell me the booking number you're asking about?
+▶ run 01a0b1f3-52b0-...
+  user      "Which container is it using?" entry=01a0b1f3-52b0-...
+  ▶ turn 01a0b1f3-52b3-...
+    [Assistant] entry=01a0b1f3-52b4-... I need a booking number to look that up. Which booking are you referring to?
+  ◀ turn_end tool_results=0
+◀ run_end status=completed fromTip=null tip=01a0b1f3-52b4-...
 [Lane] entries=2
 ```
 
@@ -291,7 +313,7 @@ src/get-booking-tool.ts       Harness-flavored tool — different execute() sign
                                the plain Agent tool used in Labs 01/04/05/06
 src/session-store.ts          JsonlSessionRepo wiring + create-or-reopen-by-id helper
 src/create-harness.ts         Model selection + AgentHarness.create() + lane("main")
-src/harness-trace-logger.ts   harness.events.on(...) lifecycle logging, one call per event type
+src/harness-trace-logger.ts   Indented run/turn/tool tree logger over harness.events
 src/cli.ts                    One CLI invocation = one turn against one named session
 data/bookings.json            Same fixture as Lab 05
 session-data/                 Durable JSONL sessions this lab writes (git-ignored, local evidence)

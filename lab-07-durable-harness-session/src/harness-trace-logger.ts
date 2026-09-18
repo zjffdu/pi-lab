@@ -2,84 +2,91 @@ import type { AgentHarness, AgentMessage } from "@earendil-works/pi-agent-core";
 
 export type TraceWriter = (line: string) => void;
 
-function assistantText(message: AgentMessage): string {
-  if (message.role !== "assistant") {
-    return "";
+function textOf(message: AgentMessage): string {
+  if (message.role === "user") {
+    return typeof message.content === "string"
+      ? message.content
+      : message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
   }
-
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
+  if (message.role === "assistant" || message.role === "toolResult") {
+    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+  }
+  return "";
 }
 
 /**
- * Same lifecycle-logging idea as Lab 01/05/06's trace loggers, adapted to
- * `AgentHarness.events` — a per-harness bus, not a per-agent `subscribe()` callback. Each
- * event carries the durable `lane` name it belongs to, so a multi-lane harness could
- * reuse one logger for every lane; this lab only ever has `"main"`.
+ * Renders `AgentHarness.events` as an indented run/turn/tool tree instead of one flat
+ * `[Harness][sessionId] ...` line per event — `▶`/`◀` mark a span opening and closing,
+ * aligned at the same indent (bracket-style). Same idea as Lab 01's `Agent`-level logger,
+ * adapted to `harness.events.on(type, listener)` — a per-harness bus with one registration
+ * per event type, rather than a single `Agent.subscribe()` entry point.
  *
- * Registration is one `harness.events.on(type, listener)` call per event type: unlike
- * Lab 01's `Agent.subscribe`, there is no single "every event" entry point, only a
- * type-narrowed one per call.
+ * Only "run" and "turn" are genuine LIFO spans — a lane never has more than one of each
+ * open at a time. A tool call is deliberately NOT pushed onto this stack; it prints as a
+ * plain line at the current depth, same as a message line. This lab's own tool
+ * (`get_booking`) is always sequential and never interrupted, so the difference is
+ * invisible here — but see Lab 09's version of this file for the two real scenarios (crash
+ * recovery, parallel tool execution) where treating "tool" as its own push/pop span would
+ * silently corrupt every indent after it.
+ *
+ * `message_start` and `entry_added` are intentionally not subscribed to here: every fact
+ * they would add (role, entryId) is already folded into the corresponding `message_end`
+ * line — this lab has no non-message entry type (that begins with compaction in Lab 10),
+ * so there is nothing `entry_added` alone would ever reveal.
  */
 export function attachHarnessTraceLogger(
   harness: AgentHarness,
-  sessionId: string,
+  _sessionId: string,
   write: TraceWriter,
 ): () => void {
+  type Span = "run" | "turn";
+  const stack: Span[] = [];
+  const pad = () => "  ".repeat(stack.length);
+  const open = (kind: Span, text: string) => {
+    write(`${pad()}${text}`);
+    stack.push(kind);
+  };
+  const close = (kind: Span, text: string) => {
+    if (stack[stack.length - 1] === kind) {
+      stack.pop();
+    }
+    write(`${pad()}${text}`);
+  };
+
   const unsubscribers = [
     harness.events.on("lane_created", (event) => {
-      write(`[Harness][${sessionId}] lane=${event.lane} lane_created at=${event.at ?? "null"}`);
+      write(`${pad()}lane "${event.lane}" created`);
     }),
     harness.events.on("run_start", (event) => {
-      write(`[Harness][${sessionId}] lane=${event.lane} run_start run=${event.runId}`);
+      open("run", `▶ run ${event.runId}`);
     }),
     harness.events.on("turn_start", (event) => {
-      write(`[Harness][${sessionId}] lane=${event.lane} turn_start run=${event.runId} turn=${event.turnId}`);
+      open("turn", `▶ turn ${event.turnId}`);
     }),
     harness.events.on("tool_start", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} tool_start tool=${event.toolName} ` +
-          `call=${event.toolCallId} args=${JSON.stringify(event.args)}`,
-      );
+      write(`${pad()}▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
     }),
     harness.events.on("tool_end", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} tool_end tool=${event.toolName} ` +
-          `call=${event.toolCallId} status=${event.isError ? "error" : "success"}`,
-      );
-    }),
-    harness.events.on("message_start", (event) => {
-      write(`[Harness][${sessionId}] lane=${event.lane} message_start role=${event.message.role}`);
+      write(`${pad()}◀ tool_end ${event.toolName} status=${event.isError ? "error" : "success"}`);
     }),
     harness.events.on("message_end", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} message_end role=${event.message.role} ` +
-          `entry=${event.entryId ?? "none"}`,
-      );
-      const text = assistantText(event.message);
-      if (text) {
-        write(`[Assistant][${sessionId}] ${text}`);
+      const message = event.message;
+      const prefix = pad();
+      const entry = ` entry=${event.entryId ?? "none"}`;
+      if (message.role === "user") {
+        write(`${prefix}user      "${textOf(message)}"${entry}`);
+      } else if (message.role === "toolResult") {
+        write(`${prefix}toolResult ${message.toolName} status=${message.isError ? "error" : "success"}${entry}`);
+      } else {
+        const text = textOf(message);
+        write(text ? `${prefix}[Assistant]${entry} ${text}` : `${prefix}assistant (tool call only, no text)${entry}`);
       }
     }),
     harness.events.on("turn_end", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} turn_end run=${event.runId} turn=${event.turnId} ` +
-          `tool_results=${event.toolResults.length}`,
-      );
-    }),
-    harness.events.on("entry_added", (event) => {
-      write(
-        `[Entry][${sessionId}] lane=${event.lane} id=${event.entry.id} ` +
-          `parent=${event.entry.parentId ?? "null"} seq=${event.entry.seq} type=${event.entry.type}`,
-      );
+      close("turn", `◀ turn_end tool_results=${event.toolResults.length}`);
     }),
     harness.events.on("run_end", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} run_end run=${event.runId} status=${event.status} ` +
-          `fromTip=${event.fromTipId ?? "null"} tip=${event.tipId ?? "null"}`,
-      );
+      close("run", `◀ run_end status=${event.status} fromTip=${event.fromTipId ?? "null"} tip=${event.tipId ?? "null"}`);
     }),
   ];
 

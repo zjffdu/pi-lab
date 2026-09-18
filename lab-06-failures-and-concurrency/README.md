@@ -140,25 +140,30 @@ differ.
 Real (non-illustrative) excerpts from live runs, trimmed to the lines that matter. Exact wording,
 timing, and turn count will vary by model and machine — the *shape* is what to check for.
 
+`src/trace-logger.ts` renders the same indented agent/turn/tool tree as Lab 01's logger, with
+every line tagged `[conversationId] t=+Xms turn=N` — see that file for why a tool call still
+does not get its own push/pop span even here, where two tools genuinely run in parallel
+(experiment D).
+
 **Experiment A** — the model never claims a container number for `BAD_ID`:
 
 ```text
-[Tool][experiment-a] t=+817.78ms turn=1 id=call_00_... start get_booking args={"bookingNo":"BAD_ID"}
-[Tool][experiment-a] t=+824.47ms turn=1 id=call_00_... end get_booking status=error
-[Assistant][experiment-a] Booking BAD_ID was not found, so there is no container number to report...
+[experiment-a] t=+821.53ms turn=1     ▶ tool_start get_booking call=call_00_bBlsIJ... args={"bookingNo":"BAD_ID"}
+[experiment-a] t=+827.18ms turn=1     ◀ tool_end get_booking call=call_00_bBlsIJ... status=error
+[experiment-a] t=+1883.46ms turn=2     [Assistant] Booking **BAD_ID** was not found, so I can't determine which container it uses. ...
 ```
 
-**Experiment B** — `steer()` was called at `t=+1582ms`, while `get_port_status` was still running
-(it did not end until `t=+2491ms`); the steering message is not injected until *after* that,
+**Experiment B** — `steer()` was called at `t=+2242ms`, while `get_port_status` was still running
+(it did not end until `t=+3152ms`); the steering message is not injected until *after* that,
 as `turn=3`, immediately following `turn=2`'s `turn_end`:
 
 ```text
-[Tool][experiment-b] t=+1582.35ms turn=2 id=call_01_... start get_port_status args={"portCode":"CNSHA"}
+[experiment-b] t=+2242.16ms turn=2     ▶ tool_start get_port_status call=call_01_EK1dof... args={"portCode":"CNSHA"}
 [Harness][experiment-b] steer() while get_port_status is still running
-[Tool][experiment-b] t=+2491.62ms turn=2 id=call_01_... end get_port_status status=success
-[Pi][experiment-b] t=+2491.75ms turn=2 turn_end tool_results=2
-[Pi][experiment-b] t=+2491.76ms turn=3 turn_start
-[Pi][experiment-b] t=+2491.77ms turn=3 message_start role=user
+[experiment-b] t=+3152.38ms turn=2     ◀ tool_end get_port_status call=call_01_EK1dof... status=success
+[experiment-b] t=+3152.69ms turn=2   ◀ turn_end tool_results=2
+[experiment-b] t=+3152.79ms turn=3   ▶ turn
+[experiment-b] t=+3152.81ms turn=3     user       "Also say whether the delay looks likely to get worse."
 ```
 
 Only **one** more turn (`turn=3`) ran after the tool batch, and the assistant folded the steering
@@ -170,24 +175,28 @@ the *final* answer without a queued follow-up), and only then did the follow-up 
 **separate fourth turn**:
 
 ```text
-[Pi][experiment-c] t=+4324.58ms turn=3 turn_end tool_results=0
-[Pi][experiment-c] t=+4324.64ms turn=4 turn_start
-[Pi][experiment-c] t=+4324.65ms turn=4 message_start role=user
-[Assistant][experiment-c] Container MSKU1234567 (BK1001, CNSHA→NLRTM) loaded and departed...
-[Pi][experiment-c] t=+5259.43ms turn=4 agent_end
+[experiment-c] t=+4762.94ms turn=3   ◀ turn_end tool_results=0
+[experiment-c] t=+4763.06ms turn=4   ▶ turn
+[experiment-c] t=+4763.08ms turn=4     user       "Also give me a one-sentence summary for a dashboard."
+[experiment-c] t=+5781.14ms turn=4     [Assistant] Booking BK1001 (MSKU1234567, CNSHA→NLRTM) departed ~7 hours late...
+[experiment-c] t=+5781.22ms turn=4   ◀ turn_end tool_results=0
 ```
 
 This is the concrete difference between the two primitives: steering rides along with the turn
 that was already going to run next; a follow-up only runs once the agent would otherwise have
 stopped, which can mean paying for an entire extra turn.
 
-**Experiment D** — both tools share `turn=2`; `get_port_status` and `get_container_events`
-finish within microseconds of each other here (no artificial delay), and `transcript=` order
-matches `source=` order for both:
+**Experiment D** — both tools share `turn=2`, dispatched as flat siblings (neither nested
+inside the other), and finish within microseconds of each other here (no artificial delay);
+`transcript=` order matches `source=` order for both:
 
 ```text
-[Timeline][experiment-d]   id=call_00_... get_container_events source=0 transcript=0 start=+1739.14ms end=+1756.39ms duration=17.26ms
-[Timeline][experiment-d]   id=call_01_... get_port_status source=1 transcript=1 start=+1739.86ms end=+1756.46ms duration=16.60ms
+[experiment-d] t=+1754.63ms turn=2     ▶ tool_start get_container_events call=call_00_tY3MlB... args={"containerNo":"MSKU1234567"}
+[experiment-d] t=+1755.28ms turn=2     ▶ tool_start get_port_status call=call_01_htukAC... args={"portCode":"CNSHA"}
+[experiment-d] t=+1765.33ms turn=2     ◀ tool_end get_container_events call=call_00_tY3MlB... status=success
+[experiment-d] t=+1765.40ms turn=2     ◀ tool_end get_port_status call=call_01_htukAC... status=success
+[experiment-d] t=+1765.48ms turn=2     [Timeline]   id=call_00_tY3MlB... get_container_events source=0 transcript=0 start=+1754.63ms end=+1765.33ms duration=10.70ms
+[experiment-d] t=+1765.48ms turn=2     [Timeline]   id=call_01_htukAC... get_port_status source=1 transcript=1 start=+1755.28ms end=+1765.40ms duration=10.12ms
 ```
 
 Re-run with `LAB06_PORT_STATUS_DELAY_MS=900 npm run agent -- --experiment d` to widen the gap

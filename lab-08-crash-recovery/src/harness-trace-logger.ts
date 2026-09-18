@@ -2,91 +2,95 @@ import type { AgentHarness, AgentMessage, HarnessEvent } from "@earendil-works/p
 
 export type TraceWriter = (line: string) => void;
 
-function assistantText(message: AgentMessage): string {
-  if (message.role !== "assistant") {
-    return "";
-  }
-
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-}
-
 /**
  * Every lane-scoped `HarnessEvent` can carry `recovery?: true` — set when the event is
  * being replayed to observers as part of a harness *catching up* to durable state (for
  * example, during `lane.resume()`) rather than being produced live for the first time.
- * Lab 07 never saw this flag because it never left an operation open. Lab 08's whole point
- * is that flag: this logger prints it explicitly on every lane event so the evidence shows,
- * rather than asserts, which events were replay-recovery and which were freshly produced.
  */
-function recoveryTag(event: HarnessEvent): string {
-  return "recovery" in event && event.recovery ? " recovery=true" : "";
+function isRecovery(event: HarnessEvent): boolean {
+  return "recovery" in event && event.recovery === true;
 }
 
+function textOf(message: AgentMessage): string {
+  if (message.role === "user") {
+    return typeof message.content === "string"
+      ? message.content
+      : message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+  }
+  if (message.role === "assistant" || message.role === "toolResult") {
+    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+  }
+  return "";
+}
+
+/**
+ * Renders `AgentHarness.events` as an indented run/turn/tool tree — `▶`/`◀` mark a span
+ * opening and closing, aligned at the same indent (bracket-style); `↺` marks an event fired
+ * while the harness is *catching up* to durable state during recovery rather than producing
+ * it live. This lab's whole point lives in that marker: the killed process's turn opens
+ * live, but everything `lane.resume()` replays afterward — including the synthesized,
+ * `isError: true` outcome for the tool call that never got to finish — is tagged `↺`, right
+ * down to the exact event where the interruption is visible: a `↺ ◀ tool_end` with no
+ * matching `↺ ▶ tool_start` before it, because recovery never re-invoked the tool.
+ *
+ * Only "run" and "turn" are genuine LIFO spans on the indent stack. A tool call is
+ * deliberately NOT pushed onto it — it prints as a plain line at the current depth, same as
+ * a message line. That is exactly what keeps the case above from corrupting every indent
+ * after it: if "tool" were its own push/pop span, `↺ ◀ tool_end` would have nothing of its
+ * own kind to pop and would fall back to popping "turn" instead, throwing off every line for
+ * the rest of the resumed operation.
+ */
 export function attachHarnessTraceLogger(
   harness: AgentHarness,
-  sessionId: string,
+  _sessionId: string,
   write: TraceWriter,
 ): () => void {
+  type Span = "run" | "turn";
+  const stack: Span[] = [];
+  const pad = () => "  ".repeat(stack.length);
+  const mark = (event: HarnessEvent) => (isRecovery(event) ? "↺ " : "");
+  const open = (kind: Span, text: string) => {
+    write(`${pad()}${text}`);
+    stack.push(kind);
+  };
+  const close = (kind: Span, text: string) => {
+    if (stack[stack.length - 1] === kind) {
+      stack.pop();
+    }
+    write(`${pad()}${text}`);
+  };
+
   const unsubscribers = [
-    harness.events.on("lane_created", (event) => {
-      write(`[Harness][${sessionId}] lane=${event.lane} lane_created at=${event.at ?? "null"}${recoveryTag(event)}`);
-    }),
     harness.events.on("run_start", (event) => {
-      write(`[Harness][${sessionId}] lane=${event.lane} run_start run=${event.runId}${recoveryTag(event)}`);
-    }),
-    harness.events.on("run_resume", (event) => {
-      write(`[Harness][${sessionId}] lane=${event.lane} run_resume run=${event.runId}${recoveryTag(event)}`);
+      open("run", `${mark(event)}▶ run ${event.runId}`);
     }),
     harness.events.on("turn_start", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} turn_start run=${event.runId} turn=${event.turnId}${recoveryTag(event)}`,
-      );
+      open("turn", `${mark(event)}▶ turn ${event.turnId}`);
     }),
     harness.events.on("tool_start", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} tool_start tool=${event.toolName} ` +
-          `call=${event.toolCallId} args=${JSON.stringify(event.args)}${recoveryTag(event)}`,
-      );
+      write(`${pad()}${mark(event)}▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
     }),
     harness.events.on("tool_end", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} tool_end tool=${event.toolName} ` +
-          `call=${event.toolCallId} status=${event.isError ? "error" : "success"}${recoveryTag(event)}`,
-      );
-    }),
-    harness.events.on("message_start", (event) => {
-      write(`[Harness][${sessionId}] lane=${event.lane} message_start role=${event.message.role}${recoveryTag(event)}`);
+      write(`${pad()}${mark(event)}◀ tool_end ${event.toolName} status=${event.isError ? "error" : "success"}`);
     }),
     harness.events.on("message_end", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} message_end role=${event.message.role} ` +
-          `entry=${event.entryId ?? "none"}${recoveryTag(event)}`,
-      );
-      const text = assistantText(event.message);
-      if (text) {
-        write(`[Assistant][${sessionId}] ${text}`);
+      const message = event.message;
+      const prefix = `${pad()}${mark(event)}`;
+      const entry = ` entry=${event.entryId ?? "none"}`;
+      if (message.role === "user") {
+        write(`${prefix}user      "${textOf(message)}"${entry}`);
+      } else if (message.role === "toolResult") {
+        write(`${prefix}toolResult ${message.toolName} status=${message.isError ? "error" : "success"}${entry}`);
+      } else {
+        const text = textOf(message);
+        write(text ? `${prefix}[Assistant]${entry} ${text}` : `${prefix}assistant (tool call only, no text)${entry}`);
       }
     }),
     harness.events.on("turn_end", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} turn_end run=${event.runId} turn=${event.turnId} ` +
-          `tool_results=${event.toolResults.length}${recoveryTag(event)}`,
-      );
-    }),
-    harness.events.on("entry_added", (event) => {
-      write(
-        `[Entry][${sessionId}] lane=${event.lane} id=${event.entry.id} ` +
-          `parent=${event.entry.parentId ?? "null"} seq=${event.entry.seq} type=${event.entry.type}${recoveryTag(event)}`,
-      );
+      close("turn", `${mark(event)}◀ turn_end tool_results=${event.toolResults.length}`);
     }),
     harness.events.on("run_end", (event) => {
-      write(
-        `[Harness][${sessionId}] lane=${event.lane} run_end run=${event.runId} status=${event.status} ` +
-          `fromTip=${event.fromTipId ?? "null"} tip=${event.tipId ?? "null"}${recoveryTag(event)}`,
-      );
+      close("run", `${mark(event)}◀ run_end status=${event.status} fromTip=${event.fromTipId ?? "null"} tip=${event.tipId ?? "null"}`);
     }),
   ];
 

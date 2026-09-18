@@ -160,33 +160,43 @@ child processes (`--resume`, then `--resume` again) and asserts on their output.
 non-zero if any assertion fails.
 
 Actual output from one recorded run (trimmed to the load-bearing lines; ids are unique per
-run — the shape, the `recovery=true` tags, and the `NothingToResume` line are what to compare
-against your own run):
+run — the shape, the `↺` recovery markers, and the `NothingToResume` line are what to compare
+against your own run). `src/harness-trace-logger.ts` renders `harness.events` as an indented
+run/turn/tool tree — `▶`/`◀` mark a span opening/closing, `↺` marks an event fired while the
+harness is catching up to durable state during recovery. Notice step 2's recovery block jumps
+straight from `↺ ▶ turn` to a synthesized `↺ ◀ tool_end` with **no** `↺ ▶ tool_start` in
+between — the tool was never actually re-invoked:
 
 ```text
 === Step 1: start a turn that will be killed mid-flight (session=conversation-crash-a) ===
 [child:stdout] [Session] id=conversation-crash-a created path=.../conversation-crash-a.jsonl
 [child:stdout] [Harness] lane=main openOperationsOnAttach=0
 [child:stdout] [User][conversation-crash-a] What are the movement events for container MSKU1234567?
-[child:stdout] [Harness][conversation-crash-a] lane=main run_start run=01a0ae4d-eb94-...-c8af5ca1ef22
-[child:stdout] [Entry][conversation-crash-a] lane=main id=...c8b037501315 parent=null seq=4 type=message
-[child:stdout] [Harness][conversation-crash-a] lane=main tool_start tool=get_container_events call=call_00_eqdEZoEzN7y88Wm9mCZV2627 args={"containerNo":"MSKU1234567"}
-[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_eqdEZoEzN7y88Wm9mCZV2627 tool=get_container_events containerNo=MSKU1234567
+[child:stdout] ▶ run 01a0b1f5-6566-...
+[child:stdout]   user      "What are the movement events for container MSKU1234567?" entry=01a0b1f5-6566-...
+[child:stdout]   ▶ turn 01a0b1f5-6569-...
+[child:stdout]     assistant (tool call only, no text) entry=01a0b1f5-656a-...
+[child:stdout]     ▶ tool_start get_container_events call=call_00_QOnLI... args={"containerNo":"MSKU1234567"}
+[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_QOnLI... tool=get_container_events containerNo=MSKU1234567
 [demo] turn 1 exited: code=null signal=SIGKILL
 
 === Step 2: reopen and resume the interrupted operation (session=conversation-crash-a) ===
 [child:stdout] [Session] id=conversation-crash-a reopened path=... (same file)
 [child:stdout] [Harness] lane=main openOperationsOnAttach=1
-[child:stdout] [Harness] lane=main OPEN operation=01a0ae4d-eb94-...-c8af5ca1ef22 kind=run startedAt=1789630737300
+[child:stdout] [Harness] lane=main OPEN operation=01a0b1f5-6566-... kind=run startedAt=1789692044646
 [child:stdout] [Lane] entries(before)=2
 [child:stdout] [Entry][before] seq=4  ... type=message role=user
 [child:stdout] [Entry][before] seq=30 ... type=message role=assistant
 [child:stdout] [Resume][conversation-crash-a] inspecting open operation before calling lane.resume()
-[child:stdout] [Harness][conversation-crash-a] lane=main turn_start run=...c8af5ca1ef22 turn=...c8b2353b0288 recovery=true
-[child:stdout] [Harness][conversation-crash-a] lane=main tool_end tool=get_container_events call=call_00_eqdEZoEzN7y88Wm9mCZV2627 status=error recovery=true
-[child:stdout] [Entry][conversation-crash-a] lane=main id=...c8b8cd225079 seq=40 type=message
-[child:stdout] [Assistant][conversation-crash-a] The lookup for container MSKU1234567 was interrupted before it returned any events, so I don't have its movement history to report. Would you like me to try the lookup again?
-[child:stdout] [Resume] operationId=01a0ae4d-eb94-...-c8af5ca1ef22 kind=run status=completed fromTip=null tip=...0d1f8efca4b6 startedAt=1789630737300 endedAt=1789630740995
+[child:stdout] ↺ ▶ turn 01a0b1f5-6569-...
+[child:stdout]   ↺ ◀ tool_end get_container_events status=error
+[child:stdout]   ↺ toolResult get_container_events status=error entry=01a0b1f5-656a-...
+[child:stdout] ↺ ◀ turn_end tool_results=1
+[child:stdout] ▶ turn 01a0b1f5-6a89-...
+[child:stdout]   [Assistant] entry=01a0b1f5-6a8a-... The lookup for container MSKU1234567 was interrupted before any events were returned, so I don't have its movement history yet. Want me to try again?
+[child:stdout] ◀ turn_end tool_results=0
+[child:stdout] ◀ run_end status=completed fromTip=null tip=01a0b1f5-6a8a-...
+[child:stdout] [Resume] operationId=01a0b1f5-6566-... kind=run status=completed fromTip=null tip=01a0b1f5-6a8a-...
 [child:stdout] [Lane] entries(after)=4
 [demo] resume 1 exited: code=0 signal=null
 
@@ -257,9 +267,9 @@ Answer using your own terminal output and JSONL files:
 
 1. What is the earliest point in the JSONL file at which the operation admitted by your
    prompt becomes durable? Is it before or after the assistant has said anything at all?
-2. `resume()` printed `tool_end ... status=error recovery=true` for a tool that, from the
-   killed process's point of view, never got the chance to fail. Where did that error come
-   from, and which process actually wrote it to disk?
+2. `resume()` printed `↺ ◀ tool_end ... status=error` with no matching `↺ ▶ tool_start` before
+   it, for a tool that, from the killed process's point of view, never got the chance to
+   fail. Where did that error come from, and which process actually wrote it to disk?
 3. Compare the `operationId` printed in `[Harness] lane=main OPEN operation=...` (step 2) to
    the `operationId` in the final `[Resume] operationId=...` line. What does that equality
    prove, and which id (if any) would you expect to differ if the harness instead started a
@@ -306,7 +316,7 @@ src/checkpoint.ts                  Shared marker format between the tool (writer
                                     demo script (reader) — no timing, no sleeps, just a string
 src/session-store.ts               JsonlSessionRepo wiring + create-or-reopen-by-id helper
 src/create-harness.ts              Model selection + both tools + AgentHarness.create()
-src/harness-trace-logger.ts        Lifecycle logging, extended to print `recovery=true`
+src/harness-trace-logger.ts        Indented run/turn/tool tree logger, `↺` marks recovery
 src/cli.ts                         One invocation = one turn (--prompt) or one resume
                                     attempt (--resume) against one named session
 scripts/crash-recovery-demo.ts     Deterministic parent harness: spawn, watch for the
