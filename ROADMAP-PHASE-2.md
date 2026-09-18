@@ -79,9 +79,9 @@ one lab and see the complete experiment without resolving a hidden shared runtim
 | 07 | Durable Harness Session | Complete |
 | 08 | Crash Recovery | Complete |
 | 09 | Tool Replay Safety | Complete |
-| 10 | Context Compaction | Planned |
-| 11 | Session Tree | Planned |
-| 12 | Context Projection | Planned |
+| 10 | Context Compaction | Complete |
+| 11 | Session Tree | Complete |
+| 12 | Context Projection | Complete |
 | 13 | Tool Governance | Planned |
 | 14 | Telemetry and Evaluation | Planned |
 

@@ -1,0 +1,20 @@
+[
+  {
+    "bookingNo": "BK1001",
+    "containerNo": "MSKU1234567",
+    "origin": "CNSHA",
+    "destination": "NLRTM",
+    "vessel": "MAERSK TEST",
+    "plannedDeparture": "2026-09-10",
+    "plannedArrival": "2026-10-15"
+  },
+  {
+    "bookingNo": "BK1002",
+    "containerNo": "MSKU7654321",
+    "origin": "SGSIN",
+    "destination": "USLAX",
+    "vessel": "MAERSK SECOND",
+    "plannedDeparture": "2026-09-12",
+    "plannedArrival": "2026-10-02"
+  }
+]

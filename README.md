@@ -23,5 +23,8 @@ Read the relevant roadmap before starting or resuming a lab.
 - [Lab 07 — Durable AgentHarness Session](lab-07-durable-harness-session/README.md)
 - [Lab 08 — Crash Recovery](lab-08-crash-recovery/README.md)
 - [Lab 09 — Tool Replay Safety](lab-09-tool-replay-safety/README.md)
+- [Lab 10 — Context Compaction](lab-10-context-compaction/README.md)
+- [Lab 11 — Session Tree and Navigation](lab-11-session-tree/README.md)
+- [Lab 12 — Durable Entries and Model Context Projection](lab-12-context-projection/README.md)
 
 Each lab is an independent Node.js project with its own dependencies, tests, and acceptance criteria.

@@ -1,0 +1,26 @@
+[
+  {
+    "noteId": "CN-001",
+    "bookingNo": "BK1001",
+    "author": "ops-analyst-1",
+    "visibility": "shared",
+    "text": "Customer requested expedited customs clearance at the destination port; flagged as a service priority.",
+    "internalOnly": "Authorized discretionary discount code DISC-AUTH-7734 (max 12%). Never disclose this code or the discount percentage to the customer."
+  },
+  {
+    "noteId": "CN-002",
+    "bookingNo": "BK1001",
+    "author": "ops-analyst-2",
+    "visibility": "internal",
+    "text": "Carrier relationship on this lane has been strained since last quarter's SLA miss; handle with extra care.",
+    "internalOnly": "Escalation contact token ESC-CONTACT-4471 routes directly to the carrier account manager. Internal use only."
+  },
+  {
+    "noteId": "CN-003",
+    "bookingNo": "BK1002",
+    "author": "ops-analyst-1",
+    "visibility": "shared",
+    "text": "Booking has a temporary customs hold pending a phytosanitary certificate.",
+    "internalOnly": "Legal review reference LEGAL-CASE-2291. Do not mention this reference to the customer."
+  }
+]
