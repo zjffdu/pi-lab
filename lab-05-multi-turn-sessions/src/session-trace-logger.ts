@@ -63,17 +63,16 @@ export function createSessionTraceLogger(
           line(`toolResult ${message.toolName} status=${message.isError ? "error" : "success"}`);
         } else if (message.role === "assistant") {
           const text = textOf(message);
+          const toolCalls = message.content.filter((block) => block.type === "toolCall");
           if (message.errorMessage) {
             line(`assistant (${message.stopReason}) ${message.errorMessage}`);
-          } else if (text) {
-            line(`[Assistant] ${text}`);
           } else {
-            const toolCalls = message.content.filter((block) => block.type === "toolCall");
-            line(
-              toolCalls.length
-                ? `assistant (tool calls: ${toolCalls.map((call) => call.name).join(", ")})`
-                : "assistant (empty)",
-            );
+            // A message can carry text and tool-call requests at once; print both, never one in place of the other.
+            if (text) line(`[Assistant] ${text}`);
+            for (const call of toolCalls) {
+              line(`assistant (tool call) ${call.name} call=${call.id} args=${JSON.stringify(call.arguments)}`);
+            }
+            if (!text && !toolCalls.length) line("assistant (empty)");
           }
         }
         break;

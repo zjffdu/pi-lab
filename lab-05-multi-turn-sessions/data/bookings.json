@@ -1,7 +1,7 @@
 [
   {
     "bookingNo": "BK1001",
-    "containerNo": "MSKU1234567",
+    "containerNos": ["MSKU1234567", "MSKU7654321"],
     "origin": "CNSHA",
     "destination": "NLRTM",
     "vessel": "MAERSK TEST",
