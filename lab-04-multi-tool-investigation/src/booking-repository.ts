@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 export interface Booking {
   bookingNo: string;
-  containerNo: string;
+  containerNos: string[];
   origin: string;
   destination: string;
   vessel: string;
@@ -16,15 +16,13 @@ function isBooking(value: unknown): value is Booking {
   }
 
   const candidate = value as Record<string, unknown>;
-  return [
-    "bookingNo",
-    "containerNo",
-    "origin",
-    "destination",
-    "vessel",
-    "plannedDeparture",
-    "plannedArrival",
-  ].every((field) => typeof candidate[field] === "string");
+  return (
+    Array.isArray(candidate.containerNos) &&
+    candidate.containerNos.every((containerNo) => typeof containerNo === "string") &&
+    ["bookingNo", "origin", "destination", "vessel", "plannedDeparture", "plannedArrival"].every(
+      (field) => typeof candidate[field] === "string",
+    )
+  );
 }
 
 export class BookingRepository {

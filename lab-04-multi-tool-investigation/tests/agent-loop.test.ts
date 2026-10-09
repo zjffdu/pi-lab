@@ -54,9 +54,10 @@ function scriptedStream(script: AssistantMessage[]): { streamFn: StreamFn; conte
   return { streamFn, contexts };
 }
 
-// Turn 1 resolves the booking; turn 2 requests get_port_status FIRST and get_container_events
-// SECOND in one assistant message; turn 3 answers. Combined with a delayed get_port_status, this
-// makes source order (port, events) and completion order (events, port) deliberately disagree.
+// Turn 1 resolves the booking (BK1001 has two containers); turn 2 requests get_port_status FIRST,
+// then get_container_events once per container, all in one assistant message; turn 3 answers.
+// Combined with a delayed get_port_status, this makes source order (port, events, events) and
+// completion order (events, events, port) deliberately disagree.
 function investigationScript(portCode = "CNSHA"): AssistantMessage[] {
   return [
     assistant({
@@ -68,6 +69,7 @@ function investigationScript(portCode = "CNSHA"): AssistantMessage[] {
       content: [
         toolCall("call-port", "get_port_status", { portCode }),
         toolCall("call-events", "get_container_events", { containerNo: "MSKU1234567" }),
+        toolCall("call-events-2", "get_container_events", { containerNo: "MSKU2345678" }),
       ],
     }),
     assistant({ stopReason: "stop", content: [{ type: "text", text: "final answer" }] }),
@@ -103,16 +105,21 @@ describe("Lab 04 multi-tool loop against the pinned Pi release", () => {
       "  ▶ turn #2",
       '    assistant (tool call) get_port_status call=call-port args={"portCode":"CNSHA"}',
       '    assistant (tool call) get_container_events call=call-events args={"containerNo":"MSKU1234567"}',
+      '    assistant (tool call) get_container_events call=call-events-2 args={"containerNo":"MSKU2345678"}',
       '    ▶ tool_start get_port_status call=call-port args={"portCode":"CNSHA"}',
       '    ▶ tool_start get_container_events call=call-events args={"containerNo":"MSKU1234567"}',
+      '    ▶ tool_start get_container_events call=call-events-2 args={"containerNo":"MSKU2345678"}',
+      "    ◀ tool_end get_container_events status=success",
       "    ◀ tool_end get_container_events status=success",
       "    ◀ tool_end get_port_status status=success",
       "    toolResult get_port_status status=success",
       "    toolResult get_container_events status=success",
-      "    [Timeline] tool_calls=2",
+      "    toolResult get_container_events status=success",
+      "    [Timeline] tool_calls=3",
       "    [Timeline]   get_port_status source=0 transcript=0 start=+Nms end=+Nms duration=Nms",
       "    [Timeline]   get_container_events source=1 transcript=1 start=+Nms end=+Nms duration=Nms",
-      "  ◀ turn_end #2 tool_results=2",
+      "    [Timeline]   get_container_events source=2 transcript=2 start=+Nms end=+Nms duration=Nms",
+      "  ◀ turn_end #2 tool_results=3",
       "  ▶ turn #3",
       "    [Assistant] final answer",
       "  ◀ turn_end #3 tool_results=0",
@@ -131,19 +138,20 @@ describe("Lab 04 multi-tool loop against the pinned Pi release", () => {
 
     await agent.prompt("Investigate booking BK1001");
 
-    const executionEnds = events.flatMap((event) => (event.type === "tool_execution_end" ? [event.toolName] : []));
-    expect(executionEnds).toEqual(["get_booking", "get_container_events", "get_port_status"]);
+    const executionEnds = events.flatMap((event) => (event.type === "tool_execution_end" ? [event.toolCallId] : []));
+    expect(executionEnds).toEqual(["call-booking", "call-events", "call-events-2", "call-port"]);
 
     const turnEnds = events.flatMap((event) => (event.type === "turn_end" ? [event] : []));
-    expect(turnEnds[1]?.toolResults.map((result) => result.toolName)).toEqual([
-      "get_port_status",
-      "get_container_events",
+    expect(turnEnds[1]?.toolResults.map((result) => result.toolCallId)).toEqual([
+      "call-port",
+      "call-events",
+      "call-events-2",
     ]);
 
     const toolResultsInTranscript = agent.state.messages.flatMap((message) =>
-      message.role === "toolResult" ? [message.toolName] : [],
+      message.role === "toolResult" ? [message.toolCallId] : [],
     );
-    expect(toolResultsInTranscript).toEqual(["get_booking", "get_port_status", "get_container_events"]);
+    expect(toolResultsInTranscript).toEqual(["call-booking", "call-port", "call-events", "call-events-2"]);
   });
 
   it("reports real timing so the delayed tool visibly ends later without changing transcript order", async () => {
@@ -154,16 +162,19 @@ describe("Lab 04 multi-tool loop against the pinned Pi release", () => {
 
     await agent.prompt("Investigate booking BK1001");
 
-    const endOf = (toolName: string): number => {
-      const line = lines.find((candidate) => candidate.includes(`[Timeline]   ${toolName} source=`));
+    const endOf = (toolName: string, source: number): number => {
+      const line = lines.find((candidate) => candidate.includes(`[Timeline]   ${toolName} source=${source} `));
       const match = line?.match(/end=\+(\d+)ms/);
-      if (!match?.[1]) throw new Error(`no timeline line for ${toolName}`);
+      if (!match?.[1]) throw new Error(`no timeline line for ${toolName} source=${source}`);
       return Number(match[1]);
     };
 
-    expect(endOf("get_port_status") - endOf("get_container_events")).toBeGreaterThanOrEqual(30);
+    // The delayed get_port_status (source=0) ends later than both container lookups (source=1, 2).
+    expect(endOf("get_port_status", 0) - endOf("get_container_events", 1)).toBeGreaterThanOrEqual(30);
+    expect(endOf("get_port_status", 0) - endOf("get_container_events", 2)).toBeGreaterThanOrEqual(30);
     expect(lines.some((line) => line.includes("get_port_status source=0 transcript=0"))).toBe(true);
     expect(lines.some((line) => line.includes("get_container_events source=1 transcript=1"))).toBe(true);
+    expect(lines.some((line) => line.includes("get_container_events source=2 transcript=2"))).toBe(true);
   });
 
   // Pi 1.x carries the system prompt as a leading system message in the transcript. It is part of
@@ -183,6 +194,7 @@ describe("Lab 04 multi-tool loop against the pinned Pi release", () => {
       "assistant",
       "toolResult",
       "toolResult",
+      "toolResult",
       "assistant",
     ]);
     const roles = (index: number): string[] =>
@@ -195,6 +207,7 @@ describe("Lab 04 multi-tool loop against the pinned Pi release", () => {
       "assistant",
       "toolResult",
       "assistant",
+      "toolResult",
       "toolResult",
       "toolResult",
     ]);
@@ -229,9 +242,9 @@ describe("Lab 04 multi-tool loop against the pinned Pi release", () => {
     await agent.prompt("Investigate booking BK1001");
 
     expect(lines).toContain("    ◀ tool_end get_port_status status=error");
-    expect(lines).toContain("    ◀ tool_end get_container_events status=success");
+    expect(lines.filter((line) => line === "    ◀ tool_end get_container_events status=success")).toHaveLength(2);
     expect(lines).toContain("    toolResult get_port_status status=error");
-    expect(lines).toContain("    toolResult get_container_events status=success");
+    expect(lines.filter((line) => line === "    toolResult get_container_events status=success")).toHaveLength(2);
     expect(lines).toContain("  ▶ turn #3");
     expect(agent.state.errorMessage).toBeUndefined();
   });

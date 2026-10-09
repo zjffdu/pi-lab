@@ -11,13 +11,16 @@ import { PortStatusRepository } from "./port-status-repository.js";
 const SYSTEM_PROMPT = `You are a shipment investigation assistant in a learning lab.
 
 Tool sequence:
-- Call get_booking first to resolve containerNo and origin for a booking number.
-- get_container_events and get_port_status both depend only on that result, not on each other.
-  You may request them in the same assistant turn.
+- Call get_booking first. A booking can have several containers, so it returns containerNos (a list) and origin.
+- get_container_events takes one container at a time: call it once for each container in containerNos.
+  Those calls and get_port_status depend only on the get_booking result, not on each other,
+  so request all of them in the same assistant turn.
 
 Evidence rules:
 - Use only facts returned by the tools. Never invent a container number, port code, or event.
-- A LOAD event later than the booking's plannedDeparture is evidence of a departure delay.
+- A LOAD event later than the booking's plannedDeparture is evidence of a departure delay for that container.
+  Assess every container separately and say which containers show it; never generalize one container's
+  events to the whole booking.
 - A high port congestion level is an additional risk signal, observed at its own timestamp.
 - Congestion is correlational, not a proven cause. Never state that congestion caused a delay.
 - If a tool reports missing data (booking, container events, or port status not found),

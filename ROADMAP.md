@@ -252,13 +252,13 @@ How does Pi choose and chain multiple tools when later tool arguments depend on 
 
 ```text
 get_booking(bookingNo)
-  -> containerNo + origin
-  -> get_container_events(containerNo)
+  -> containerNos[] + origin
+  -> get_container_events(containerNo)   once per container
   -> get_port_status(origin)
   -> evidence-based synthesis
 ```
 
-After `get_booking`, container events and port status are independent and may be requested in the same tool batch. Exact turn count is not an acceptance criterion.
+A booking can have several containers. After `get_booking`, the per-container event lookups and port status are independent and may be requested in the same tool batch. Exact turn count is not an acceptance criterion.
 
 ### Scope
 
@@ -271,7 +271,7 @@ After `get_booking`, container events and port status are independent and may be
 
 ### Domain rule
 
-- A `LOAD` event later than `plannedDeparture` is evidence of a departure delay.
+- A `LOAD` event later than `plannedDeparture` is evidence of a departure delay for that container; delay is assessed per container.
 - High port congestion is an additional risk signal.
 - Congestion must not be claimed as the proven cause of the delay.
 - All timestamps include a timezone or an explicit UTC suffix.
