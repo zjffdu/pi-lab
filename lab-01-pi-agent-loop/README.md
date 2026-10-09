@@ -23,7 +23,7 @@ This lab intentionally contains one tool and one local fixture. It does not incl
 - npm
 - Credentials for a model provider supported by `@earendil-works/pi-ai`
 
-The default configuration uses DeepSeek V4 Flash through the official DeepSeek API. All booking data stays in the local fixture; the user prompt and tool transcript are sent to DeepSeek.
+The default configuration uses DeepSeek Flash through the official DeepSeek API. All booking data stays in the local fixture; the user prompt and tool transcript are sent to DeepSeek.
 
 The CLI starts Node with `--use-env-proxy`. This lets the DeepSeek client honor `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` in networks that require an outbound proxy.
 
@@ -45,7 +45,7 @@ cd lab-01-pi-agent-loop
 npm install
 ```
 
-The Pi dependencies are pinned to `0.85.1` so later SDK changes do not silently alter this lab.
+The Pi dependencies are pinned to `1.1.0` so later SDK changes do not silently alter this lab.
 
 ## 3. Configure a model
 
@@ -57,11 +57,11 @@ Set your DeepSeek API key:
 
 ```dotenv
 PI_PROVIDER=deepseek
-PI_MODEL=deepseek-v4-flash
+PI_MODEL=deepseek-flash
 DEEPSEEK_API_KEY=...
 ```
 
-Pi `0.85.1` catalogs the model as `deepseek-v4-flash`. As of September 17, 2026, DeepSeek temporarily routes this retired compatibility name to the latest `deepseek-flash` model, currently V4.1 Flash.
+Pi `1.1.0` catalogs the model as `deepseek-flash`. `npm run check` fails if the default model id stops resolving in the pinned catalog.
 
 Never commit `.env`.
 
@@ -71,7 +71,7 @@ Never commit `.env`.
 npm run check
 ```
 
-These tests verify fixture lookup, structured tool output, and the unknown-booking error. They do not call an LLM.
+These tests verify fixture lookup, structured tool output, the unknown-booking error, and the default model resolving in the pinned catalog. They also drive the real Pi `Agent` with a scripted stream function, so the turn sequence, the transcript shape, tool-error propagation, and provider-failure recording are checked against Pi `1.1.0` itself. They do not call an LLM.
 
 ## 5. Run the happy path
 
@@ -88,7 +88,7 @@ lifecycle should have this shape (shape of one recorded run; call id and answer 
 ▶ agent
   ▶ turn #1
     user       "What are the details for booking BK1001?"
-    assistant (tool calls: get_booking)
+    assistant (tool call) get_booking call=call_00_... args={"bookingNo":"BK1001"}
     ▶ tool_start get_booking call=call_00_6IQC8... args={"bookingNo":"BK1001"}
     ◀ tool_end get_booking status=success
     toolResult get_booking status=success
@@ -100,7 +100,7 @@ lifecycle should have this shape (shape of one recorded run; call id and answer 
 ◀ agent_end
 ```
 
-The important invariant is not the wording. It is that the tool result appears before the second turn and the final answer uses fixture evidence. Turn #1's assistant line varies with the model: it prints `assistant (tool calls: ...)` when the model goes straight to the tool call with no text, or `[Assistant] <preamble text>` when the model adds a text preamble before calling the tool.
+The important invariant is not the wording. It is that the tool result appears before the second turn and the final answer uses fixture evidence. Turn #1's assistant output varies with the model: it prints an `assistant (tool call) <name> call=<id> args=<json>` line alone when the model goes straight to the tool call, or an `[Assistant] <preamble text>` line followed by that same line when the model writes a short preamble first (one line per requested call). The `assistant (tool call)` line is the model's *request*, with the arguments it chose; the `tool_start`/`tool_end` pair below it is Pi actually executing the tool, and the `call=` id is what pairs the two.
 
 ## 6. Inject a failure
 
@@ -143,6 +143,12 @@ data/bookings.json         deterministic evidence
 tests/                     tests that do not call an LLM
 ```
 
+## The transcript versus the trace
+
+- **The transcript starts with the system prompt.** `agent.state.messages` is `system`, `user`, `assistant`, `toolResult`, `assistant`. The system message carries the prompt and the tool declarations, and it is what the model receives on every call. It emits no `message_*` event, so it never appears in the trace tree. `agent.state.systemPrompt` is read-only and is derived from that message.
+- **The trace shows events, not the whole transcript.** Each `message_end` and each `tool_execution_*` event is printed once, when it happens. Turn #2 prints no `user` line because no new user message was added; its input is the transcript built during turn #1.
+- **Provider failures end the run with an `error` message.** The run ends with an `assistant` message whose `stopReason` is `error`, and `agent.state.errorMessage` is set, which is what makes the CLI exit non-zero.
+
 ## Design decisions
 
 - Keep the model provider configurable so provider setup is not confused with the Agent Loop.
@@ -153,7 +159,7 @@ tests/                     tests that do not call an LLM
 
 ### `Unknown model provider/model`
 
-Keep `PI_PROVIDER=deepseek` and `PI_MODEL=deepseek-v4-flash` when using the pinned Pi `0.85.1` dependencies.
+Keep `PI_PROVIDER=deepseek` and `PI_MODEL=deepseek-flash` when using the pinned Pi `1.1.0` dependencies.
 
 ### `Provider is not configured: deepseek`
 

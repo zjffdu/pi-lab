@@ -72,17 +72,16 @@ export function createTraceLogger(write: TraceWriter): (event: AgentEvent) => vo
           write(`${prefix}toolResult ${message.toolName} status=${message.isError ? "error" : "success"}`);
         } else if (message.role === "assistant") {
           const text = textOf(message);
+          const toolCalls = message.content.filter((block) => block.type === "toolCall");
           if (message.errorMessage) {
             write(`${prefix}assistant (${message.stopReason}) ${message.errorMessage}`);
-          } else if (text) {
-            write(`${prefix}[Assistant] ${text}`);
           } else {
-            const toolCalls = message.content.filter((block) => block.type === "toolCall");
-            write(
-              toolCalls.length
-                ? `${prefix}assistant (tool calls: ${toolCalls.map((call) => call.name).join(", ")})`
-                : `${prefix}assistant (empty)`,
-            );
+            // A message can carry text and tool-call requests at once; print both, never one in place of the other.
+            if (text) write(`${prefix}[Assistant] ${text}`);
+            for (const call of toolCalls) {
+              write(`${prefix}assistant (tool call) ${call.name} call=${call.id} args=${JSON.stringify(call.arguments)}`);
+            }
+            if (!text && !toolCalls.length) write(`${prefix}assistant (empty)`);
           }
         }
         break;

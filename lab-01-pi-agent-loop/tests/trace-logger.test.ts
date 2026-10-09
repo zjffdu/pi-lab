@@ -1,4 +1,4 @@
-import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 
 import { createTraceLogger } from "../src/trace-logger.js";
@@ -15,20 +15,28 @@ function assistantMessage(text: string): AssistantMessage {
     content: text ? [{ type: "text", text }] : [],
     api: "messages",
     provider: "deepseek",
-    model: "deepseek-v4-flash",
+    model: "deepseek-flash",
     usage: USAGE,
     stopReason: "stop",
     timestamp: 0,
   };
 }
 
-function assistantToolCallMessage(toolCallId: string, toolName: string, args: Record<string, unknown>): AssistantMessage {
+function assistantToolCallMessage(
+  toolCallId: string,
+  toolName: string,
+  args: JsonObject,
+  text = "",
+): AssistantMessage {
   return {
     role: "assistant",
-    content: [{ type: "toolCall", id: toolCallId, name: toolName, arguments: args }],
+    content: [
+      ...(text ? [{ type: "text" as const, text }] : []),
+      { type: "toolCall", id: toolCallId, name: toolName, arguments: args },
+    ],
     api: "messages",
     provider: "deepseek",
-    model: "deepseek-v4-flash",
+    model: "deepseek-flash",
     usage: USAGE,
     stopReason: "toolUse",
     timestamp: 0,
@@ -41,7 +49,7 @@ function assistantErrorMessage(errorMessage: string): AssistantMessage {
     content: [],
     api: "messages",
     provider: "deepseek",
-    model: "deepseek-v4-flash",
+    model: "deepseek-flash",
     usage: USAGE,
     stopReason: "error",
     errorMessage,
@@ -89,7 +97,7 @@ describe("createTraceLogger", () => {
       "▶ agent",
       "  ▶ turn #1",
       '    user       "What are the details for booking BK1001?"',
-      "    assistant (tool calls: get_booking)",
+      '    assistant (tool call) get_booking call=call-1 args={"bookingNo":"BK1001"}',
       '    ▶ tool_start get_booking call=call-1 args={"bookingNo":"BK1001"}',
       "    ◀ tool_end get_booking status=success",
       "    toolResult get_booking status=success",
@@ -98,6 +106,37 @@ describe("createTraceLogger", () => {
       "    [Assistant] Booking BK1001 ships on the MAERSK TEST.",
       "  ◀ turn_end #2 tool_results=0",
       "◀ agent_end",
+    ]);
+  });
+
+  it("shows the tool-call request on its own line even when the model also wrote text before it", () => {
+    const lines: string[] = [];
+    const log = createTraceLogger((line) => lines.push(line));
+
+    log({ type: "agent_start" });
+    log({ type: "turn_start" });
+    log({
+      type: "message_end",
+      message: assistantToolCallMessage("call-1", "get_booking", { bookingNo: "BK1001" }, "I'll look that up."),
+    });
+
+    expect(lines.slice(2)).toEqual([
+      "    [Assistant] I'll look that up.",
+      '    assistant (tool call) get_booking call=call-1 args={"bookingNo":"BK1001"}',
+    ]);
+  });
+
+  it("prints one line per tool call when the model requests several in one message", () => {
+    const lines: string[] = [];
+    const log = createTraceLogger((line) => lines.push(line));
+    const message = assistantToolCallMessage("call-1", "get_booking", { bookingNo: "BK1001" });
+    message.content.push({ type: "toolCall", id: "call-2", name: "get_booking", arguments: { bookingNo: "BK1002" } });
+
+    log({ type: "message_end", message });
+
+    expect(lines).toEqual([
+      'assistant (tool call) get_booking call=call-1 args={"bookingNo":"BK1001"}',
+      'assistant (tool call) get_booking call=call-2 args={"bookingNo":"BK1002"}',
     ]);
   });
 

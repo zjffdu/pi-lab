@@ -33,7 +33,6 @@ export function createGetBookingTool(
     description:
       "Look up one booking by its exact booking number. Use this before making any claim about a booking.",
     parameters: getBookingParameters,
-    executionMode: "sequential",
     async execute(_toolCallId, params, signal) {
       signal?.throwIfAborted();
 

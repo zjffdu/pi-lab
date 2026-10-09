@@ -1,4 +1,4 @@
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
 import { BookingRepository } from "./booking-repository.js";
@@ -23,11 +23,14 @@ export function modelSelectionFromEnvironment(
 ): ModelSelection {
   return {
     provider: environment.PI_PROVIDER?.trim() || "deepseek",
-    modelId: environment.PI_MODEL?.trim() || "deepseek-v4-flash",
+    modelId: environment.PI_MODEL?.trim() || "deepseek-flash",
   };
 }
 
-export function createBookingAgent(selection = modelSelectionFromEnvironment()): Agent {
+export function createBookingAgent(
+  selection = modelSelectionFromEnvironment(),
+  streamFn?: StreamFn,
+): Agent {
   const models = builtinModels();
   const model = models.getModel(selection.provider, selection.modelId);
 
@@ -50,7 +53,7 @@ export function createBookingAgent(selection = modelSelectionFromEnvironment()):
       model,
       tools: [createGetBookingTool(repository)],
     },
-    streamFn: models.streamSimple.bind(models),
+    streamFn: streamFn ?? models.streamSimple.bind(models),
     toolExecution: "sequential",
   });
 }
