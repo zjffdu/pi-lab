@@ -1,5 +1,5 @@
 {
-  "name": "pi-lab-04-multi-tool-investigation",
+  "name": "pi-lab-04-multi-tool-investigation-pi-1.1",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,8 +14,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.85.1",
-    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
     "dotenv": "17.2.3"
   },
   "devDependencies": {

@@ -1,11 +1,78 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, JsonObject, ToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createInvestigationTraceLogger } from "../src/investigation-trace-logger.js";
 
+const USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+
+function toolCall(id: string, name: string, args: JsonObject): ToolCall {
+  return { type: "toolCall", id, name, arguments: args };
+}
+
+function assistantMessage(content: AssistantMessage["content"]): AssistantMessage {
+  return {
+    role: "assistant",
+    content,
+    api: "messages",
+    provider: "deepseek",
+    model: "deepseek-flash",
+    usage: USAGE,
+    stopReason: "toolUse",
+    timestamp: 0,
+  };
+}
+
 describe("createInvestigationTraceLogger", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("shows the tool-call request on its own line even when the model also wrote text before it", () => {
+    const lines: string[] = [];
+    const log = createInvestigationTraceLogger((line) => lines.push(line));
+
+    log({ type: "agent_start" });
+    log({ type: "turn_start" });
+    log({
+      type: "message_end",
+      message: assistantMessage([
+        { type: "text", text: "I'll look that up." },
+        toolCall("call-1", "get_booking", { bookingNo: "BK1001" }),
+      ]),
+    });
+
+    expect(lines.slice(2)).toEqual([
+      "    [Assistant] I'll look that up.",
+      '    assistant (tool call) get_booking call=call-1 args={"bookingNo":"BK1001"}',
+    ]);
+  });
+
+  it("prints one line per tool call when the model requests several in one message", () => {
+    const lines: string[] = [];
+    const log = createInvestigationTraceLogger((line) => lines.push(line));
+
+    log({
+      type: "message_end",
+      message: assistantMessage([
+        toolCall("call-a", "get_container_events", { containerNo: "MSKU1234567" }),
+        toolCall("call-b", "get_port_status", { portCode: "CNSHA" }),
+      ]),
+    });
+
+    expect(lines).toEqual([
+      'assistant (tool call) get_container_events call=call-a args={"containerNo":"MSKU1234567"}',
+      'assistant (tool call) get_port_status call=call-b args={"portCode":"CNSHA"}',
+    ]);
+  });
+
+  it("marks an assistant message with neither text nor tool calls as empty", () => {
+    const lines: string[] = [];
+    const log = createInvestigationTraceLogger((line) => lines.push(line));
+
+    log({ type: "message_end", message: assistantMessage([]) });
+
+    expect(lines).toEqual(["assistant (empty)"]);
   });
 
   it("renders the agent/turn/tool lifecycle as an indented tree", () => {
