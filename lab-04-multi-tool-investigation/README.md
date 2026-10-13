@@ -1,179 +1,155 @@
 # Lab 04 — Multi-tool Shipment Investigation
 
-Give Pi three tools instead of one, where two of them need arguments produced by the first, and watch how it chains and parallelizes them.
+English | [中文](README.zh-CN.md)
 
-## Learning objective
+**Question:** when one tool's output is the input of the next tools, who decides the order and what runs together?
+**Answer this lab shows:** the model decides, and Pi runs whatever it asks for:
 
-By the end of this lab, you can explain this sequence from your own console output:
+- **The dependency lives in text, not in code.** Nothing in Pi knows that `get_container_events` needs `get_booking`
+  first. The model learns it from the system prompt and the tool descriptions, and it cannot fill a required
+  argument it has not seen yet, so `get_booking` comes first.
+- **Independent calls run together.** Once `get_booking` has answered, the model can request every remaining call in
+  one message, and Pi's default parallel execution starts them all at once. Results still enter the transcript in
+  the order they were requested, not the order they finished.
+
+Think of a dispatcher who must read the booking sheet before phoning anyone, then phones the container yard and
+the port office at the same time and files the notes in the order the calls were made.
+
+## A concrete scenario
+
+A customer-service agent asks the assistant: *"Is booking `BK1001` late, and is the port a problem?"* `BK1001` has
+two containers, `MSKU1234567` and `MSKU2345678`, loading at `CNSHA`, planned to depart `2026-09-10T08:00:00Z`.
+
+- **Without this lab's approach**, you write the sequence by hand: look up the booking, loop over containers, call the
+  port service, merge. Every new data source is more glue code, and the order is frozen.
+- **With it**, you give the model three small tools and the rules of the business:
+  - Turn 1: the model can only call `get_booking`, because the container numbers and the port code exist nowhere else.
+  - Turn 2: it requests the events of both containers and the port status in one message. Pi starts all three together.
+  - Turn 3: it answers per container. Both loaded later than planned departure (delay evidence), `CNSHA` reports
+    high congestion (a risk signal), and the answer says congestion is not shown to be the cause.
+- If the port service has no record for `CNSHA`, the answer still gives both containers' delay evidence and says
+  plainly that no congestion reading exists, instead of guessing one.
+
+Who has to understand this? **You, the developer.** The agent only sees the answer. The lab teaches you where the
+ordering rule lives (descriptions and prompt), what Pi guarantees about parallel calls, and how to read the timeline.
+
+| In the scenario | In the lab |
+| --- | --- |
+| the booking sheet | `get_booking` → `containerNos[]` and `origin` |
+| phone the yard once per container | `get_container_events`, one call per container |
+| phone the port office | `get_port_status` |
+| "late" for one container | a `LOAD` event after `plannedDeparture` |
+| "the port might be a problem" | high congestion: a risk signal, never a proven cause |
+
+## The idea
 
 ```text
 get_booking(bookingNo)
   -> containerNos[] + origin
-  -> get_container_events(containerNo)   once per container
-  -> get_port_status(origin)
-  -> evidence-based synthesis
+  -> get_container_events(containerNo)   once per container, together with ...
+  -> get_port_status(origin)             ... this call, in the same turn
+  -> per-container delay evidence + risk signal + what is not established
 ```
 
-A booking can have several containers, so `get_booking` returns a list of `containerNos`, and `get_container_events` is called once per container. Those calls and `get_port_status` are independent of each other once `get_booking` resolves — Pi's default parallel tool execution may request all of them in the same assistant turn (for `BK1001`, which has two containers, that is three calls). Exact turn count is not an acceptance criterion; what matters is the dependency and the evidence in the final answer.
+Three things to take away:
 
-This lab builds directly on [Lab 01](../lab-01-pi-agent-loop/README.md)'s agent loop. It does not add Teams, multi-turn conversation state, or durable workflow execution — see [Lab 03](../lab-03-teams-pi/README.md) and [Lab 05](../ROADMAP.md) for those.
+1. **Order comes from data the model has and does not have.** A required argument it has not seen forces a turn
+   boundary; the descriptions and prompt say which calls are independent. Pi itself enforces no order.
+2. **Two orders exist and they differ.** `tool_execution_end` events arrive in completion order. The `toolResult`
+   messages in the transcript are appended in the order the model requested the calls. The trace's `[Timeline]` block
+   prints `source=` (requested), `transcript=` (appended), and real start/end times so you can see both.
+3. **A failing call does not take its siblings down.** A call that ends with `status=error` becomes an error result;
+   the other results are kept and the next turn starts.
 
-## Domain rule
+Not covered: Teams, multi-turn conversation state, durable workflows, real shipment systems (the fixtures are local).
 
-- A booking can have several containers. Delay evidence is assessed per container, never generalized from one container to the whole booking.
-- A `LOAD` event later than the booking's `plannedDeparture` is evidence of a departure delay for that container.
-- High port congestion is an additional risk signal, observed at its own `observedAt` timestamp.
-- Congestion must never be claimed as the proven cause of a delay — it is correlational only.
-- All fixture timestamps carry an explicit UTC (`Z`) suffix.
+## The experiment
 
-## Prerequisites
+Fixtures are under [`data/`](data/): `bookings.json` (`BK1001` has two containers, `BK1002` has one),
+`container-events.json`, and `port-status.json`; every timestamp ends in `Z`. `npm run agent` runs one prompt through the
+live model. Four runs, all with `deepseek-flash`:
 
-- Node.js 24.5 or newer
-- npm
-- Credentials for a model provider supported by `@earendil-works/pi-ai`
+1. `BK1001` as is.
+2. `BK1001` with the `CNSHA` entry temporarily removed from `data/port-status.json` (restored afterwards).
+3. `BK1001` with `LAB04_PORT_STATUS_DELAY_MS=800`, which delays only `get_port_status`.
+4. `BK1002` (one container) and `BAD_ID` (unknown booking).
 
-The default configuration uses DeepSeek Flash through the official DeepSeek API, same as Lab 01.
+## What we measured
 
-## 1. Predict before running
+From one live run each (turn #2's calls; durations from the `[Timeline]` block):
 
-Write down your answers before starting the agent:
+| run | calls in turn #2 | `get_port_status` | each `get_container_events` | final answer |
+| --- | --- | --- | --- | --- |
+| `BK1001` | 3 together | success, 6 ms | success, 6 ms | both containers delayed; congestion high, not claimed as cause |
+| port status removed | 3 together | `status=error`, 7 ms | success, 6–7 ms | both containers delayed; "no port status found", no congestion reading |
+| 800 ms delay | 3 together | success, 811 ms | success, 9–10 ms | same as the first row |
+| `BK1002` | 2 together (one container) | success | success | no delay: `LOAD` before planned departure |
+| `BAD_ID` | none; the run ends after turn #2 | – | – | "Booking not found", nothing invented |
 
-1. Which tool must run first, and why can the model not call `get_container_events` or `get_port_status` before it?
-2. `BK1001` has two containers. Once `get_booking` returns, which calls can run in the same assistant turn, and how many are there?
-3. If the port-status fixture is missing an entry, what should the final answer say instead of guessing?
-4. Does a high congestion reading prove that congestion caused an observed delay?
+- **Turn #1 is always `get_booking` alone**, in every run. The later calls appear only after its result is in the transcript.
+- **The number of container calls follows `containerNos`**: two for `BK1001`, one for `BK1002`.
+- **In the delayed run the three calls still start within 1 ms of each other**, and the answer waits for the slowest.
+- **Live, the delayed tool was also the last one requested**, so completion order and request order agreed. Making
+  them disagree needs the model to request the port first, which it did not; the offline test below forces it.
 
-Do not inspect the expected trace yet.
+The offline tests drive the real Pi `Agent` with a scripted stream (no network). They request `get_port_status`
+first, delay it, and check that `tool_execution_end` arrives in completion order while the `toolResult` messages stay
+in request order, that a failing tool keeps its siblings' results, and that the transcript starts with a `system`
+message and is resent in full on every call.
 
-## 2. Install dependencies
+## Run it
 
 ```bash
 cd lab-04-multi-tool-investigation
 npm install
-cp .env.example .env   # then fill in DEEPSEEK_API_KEY
+cp .env.example .env     # then fill in DEEPSEEK_API_KEY
+npm run check            # typecheck + 31 offline tests, no model calls
+npm run agent            # the default BK1001 question, live
 ```
 
-The Pi dependencies are pinned to `1.1.0` so later SDK changes do not silently alter this lab.
-
-Pi `1.1.0` catalogs the model as `deepseek-flash`. Leave `PI_MODEL` unset or set it to `deepseek-flash` in `.env`; `npm run check` fails if the default model id stops resolving in the pinned catalog.
-
-## 3. Verify the deterministic parts
-
-```bash
-npm run check
-```
-
-This covers all three repositories, all three tools' success and not-found paths, the timeline trace logger, and the default model resolving in the pinned Pi catalog. It also drives the real Pi `Agent` with a scripted stream function (`tests/agent-loop.test.ts`), so the dependent `get_booking` -> parallel evidence chain is checked against Pi `1.1.0` itself: `tool_execution_end` arrives in completion order, tool results stay in assistant source order, a failing tool in a parallel batch does not drop its sibling's result, and the transcript starts with the `system` message. Everything runs against local fixtures; no network calls.
-
-## 4. Run the agent
-
-```bash
-npm run agent
-```
-
-Or ask your own question:
+Try it by hand:
 
 ```bash
 npm run agent -- "Investigate booking BK1002 for departure delay and port risk"
+LAB04_PORT_STATUS_DELAY_MS=800 npm run agent
+npm run agent -- "Investigate booking BAD_ID"
 ```
 
-## 5. Happy path
+Reading the trace: an `assistant (tool call) <name> call=<id> args=<json>` line is the model's request; the
+`tool_start`/`tool_end` pair is Pi executing it, and `call=` pairs them. Turn #2 prints no `user` line because no new
+user message was added. `[Timeline]` lines show `source=` / `transcript=` / `start=` / `end=` / `duration=`, with times
+relative to `agent_start`.
 
-Ask about `BK1001` (the default question). `src/investigation-trace-logger.ts` renders the
-same indented agent/turn/tool tree as Lab 01's logger — a tool call is never its own
-push/pop span, precisely so two genuinely overlapping calls (like the three calls in turn #2 below) render as
-flat siblings instead of one falsely nested inside the other; the `[Timeline]` block is what
-actually reconstructs their real start/end relationship. Actual terminal trace from one
-recorded live run (call ids and the final answer elided; exact wording and turn count vary by model):
+## Test yourself
+
+Before running anything, write down your answers to 1–3; the rest after:
+
+1. Which tool can the model call first, and why can it not call the other two before it?
+2. `BK1001` has two containers. How many calls can run in the same turn after `get_booking`, and which?
+3. If `get_port_status` fails, what should the answer say about congestion?
+4. In the delayed run, did `source=` or `transcript=` change for any call? Why, or why not?
+5. Which log line shows that the model requested a call, and which shows that Pi ran it?
+6. Why does the answer say "congestion is not shown to be the cause" even when the reading is high?
+
+(No learner prediction has been recorded for this lab.)
+
+## Good to know
+
+- **Pins:** `pi-agent-core` and `pi-ai` `1.1.0`. Default model `deepseek-flash`; `npm run check` fails if it stops
+  resolving in the pinned catalog.
+- The agent uses `toolExecution: "parallel"` on purpose; the order rule is in the prompt and descriptions, which is
+  also why a different model may batch differently. Exact turn count is not part of the lab's pass criteria.
+- `LAB04_PORT_STATUS_DELAY_MS` exists only for this experiment; unset or `0` means no delay.
+- Provider/connection problems: see [Lab 01](../lab-01-pi-agent-loop/README.md). `Unknown model deepseek/<id>` means
+  `.env` names a model that is not in the pinned catalog; keep `PI_MODEL=deepseek-flash`.
+
+## Where things are
 
 ```text
-▶ agent
-  ▶ turn #1
-    user       "Investigate booking BK1001: is there evidence of a departure delay, and what is the port congestion risk?"
-    [Assistant] I'll start by looking up the booking.
-    assistant (tool call) get_booking call=call_00_rHZRt... args={"bookingNo":"BK1001"}
-    ▶ tool_start get_booking call=call_00_rHZRt... args={"bookingNo":"BK1001"}
-    ◀ tool_end get_booking status=success
-    toolResult get_booking status=success
-    [Timeline] tool_calls=1
-    [Timeline]   get_booking source=0 transcript=0 start=+2757ms end=+2759ms duration=2ms
-  ◀ turn_end #1 tool_results=1
-  ▶ turn #2
-    [Assistant] Now I'll fetch events for both containers and the port status in parallel.
-    assistant (tool call) get_container_events call=call_00_ugeik... args={"containerNo":"MSKU1234567"}
-    assistant (tool call) get_container_events call=call_01_daFaT... args={"containerNo":"MSKU2345678"}
-    assistant (tool call) get_port_status call=call_02_SeiuK... args={"portCode":"CNSHA"}
-    ▶ tool_start get_container_events call=call_00_ugeik... args={"containerNo":"MSKU1234567"}
-    ▶ tool_start get_container_events call=call_01_daFaT... args={"containerNo":"MSKU2345678"}
-    ▶ tool_start get_port_status call=call_02_SeiuK... args={"portCode":"CNSHA"}
-    ◀ tool_end get_container_events status=success
-    ◀ tool_end get_container_events status=success
-    ◀ tool_end get_port_status status=success
-    toolResult get_container_events status=success
-    toolResult get_container_events status=success
-    toolResult get_port_status status=success
-    [Timeline] tool_calls=3
-    [Timeline]   get_container_events source=0 transcript=0 start=+5294ms end=+5304ms duration=10ms
-    [Timeline]   get_container_events source=1 transcript=1 start=+5295ms end=+5304ms duration=9ms
-    [Timeline]   get_port_status source=2 transcript=2 start=+5295ms end=+5304ms duration=9ms
-  ◀ turn_end #2 tool_results=3
-  ▶ turn #3
-    [Assistant] ...fixture-backed, per-container delay/risk analysis...
-  ◀ turn_end #3 tool_results=0
-◀ agent_end
+src/booking-repository.ts, container-event-repository.ts, port-status-repository.ts   validated fixture access
+src/get-booking-tool.ts, get-container-events-tool.ts, get-port-status-tool.ts       the three tools
+src/create-agent.ts                  model, system prompt (the ordering and evidence rules), parallel Agent
+src/investigation-trace-logger.ts    agent/turn/tool tree plus the [Timeline] block
+src/cli.ts                           entrypoint; a failed run exits non-zero
+tests/agent-loop.test.ts             real Agent, scripted stream: order, siblings, transcript
 ```
-
-An `assistant (tool call) <name> call=<id> args=<json>` line is the model's *request*, with the arguments it chose; the `tool_start`/`tool_end` pair is Pi actually executing that call, and the `call=` id pairs the two. When the model requests several tools in one message (turn #2), each request gets its own line, and Pi starts them together. The two `get_container_events` lines differ only in their `containerNo` argument: one call per container.
-
-Notice that a later-requested call can finish before an earlier-requested one (compare the `end=` timestamps), yet every `transcript=` position still follows the order the model requested the calls in (`source=`). Pi reassembles tool-result messages in assistant source order regardless of which tool physically finished first — only the timeline's start/end timestamps reveal real completion order.
-
-The final answer should read roughly as: each of `MSKU1234567` and `MSKU2345678` loaded after the booking's planned departure (delay evidence, stated per container), `CNSHA` was observed at high congestion around the same time (risk signal), and congestion is not claimed as the proven cause.
-
-## 6. Inject a failure — missing port-status evidence
-
-Open `data/port-status.json` and temporarily remove the `CNSHA` entry (or rename its `portCode`). Re-run:
-
-```bash
-npm run agent
-```
-
-Observe `◀ tool_end get_port_status status=error` and confirm the final answer states plainly that port status could not be found, instead of inventing a congestion level. Restore `data/port-status.json` afterward.
-
-## 7. Inject a failure — slow independent tool
-
-Set an artificial delay on `get_port_status` and re-run:
-
-```bash
-LAB04_PORT_STATUS_DELAY_MS=800 npm run agent
-```
-
-Compare the `[Timeline]` block's `start=`/`end=`/`duration=` values against the earlier happy-path run. Both `get_container_events` calls should now finish well before `get_port_status`, while `transcript=` order for all three calls is unchanged — direct evidence that completion order and transcript order are independent under parallel execution.
-
-## 8. Explain the trace
-
-Answer using your terminal output:
-
-1. Which log line proves `get_booking` had to complete before the second turn's tool batch could start?
-2. In the delayed run, did `source=` or `transcript=` order change for either tool? Why or why not?
-3. What in the final answer distinguishes "observed delay evidence" from "risk signal" from "what the evidence does not establish"?
-
-## Completion criteria
-
-- `npm run check` passes (repository and tool success/not-found tests, plus the timeline logger tests).
-- A live run for `BK1001` obtains `containerNos` and `origin` from `get_booking` before calling the other tools, calls `get_container_events` once for each container in `containerNos`, and calls no invented identifiers.
-- The final answer separates observed delay (per container), risk signal, and unknown causality, per the domain rule.
-- Removing the `CNSHA` port-status fixture entry produces a final answer that states the missing evidence instead of fabricating a congestion level.
-- The `[Timeline]` block shows the `get_container_events` calls and `get_port_status` sharing the same turn, with `transcript=` order matching `source=` order even when their `end=` timestamps differ (see step 7).
-- You can explain why exact turn count is not part of these criteria.
-
-## The transcript versus the trace
-
-- **The transcript starts with the system prompt.** `agent.state.messages` is `system`, `user`, `assistant`, `toolResult`, `assistant`, `toolResult`, `toolResult`, `toolResult`, `assistant` (one `toolResult` per call; `BK1001`'s second turn has three). The system message carries the prompt and the tool declarations, and it is what the model receives on every call, together with the full history so far. It emits no `message_*` event, so it never appears in the trace tree.
-- **The trace shows events, not the whole transcript.** Each `message_end` and each `tool_execution_*` event is printed once, when it happens. Turn #2 prints no `user` line because no new user message was added; its input is the transcript built during turn #1.
-- **Completion order and result order are different things.** `tool_execution_end` is emitted in the order tools finish, while the `toolResult` messages are appended in the order the model requested the calls. `tests/agent-loop.test.ts` checks this offline with `get_port_status` requested first and delayed, so source order and completion order disagree.
-- **A failing tool does not drop its siblings.** When one call in a parallel batch ends with `status=error`, the other call's result is still appended and the next turn starts.
-- **Provider failures end the run with an `error` message.** The run ends with an `assistant` message whose `stopReason` is `error`, and `agent.state.errorMessage` is set, which is what makes the CLI exit non-zero.
-
-## Troubleshooting
-
-See [Lab 01](../lab-01-pi-agent-loop/README.md) for model/provider connection issues — they apply unchanged here, including the `--use-env-proxy` requirement baked into `npm run agent`. In particular, `Unknown model deepseek/<id>` means `.env` sets a model id that is not in the pinned Pi `1.1.0` catalog; keep `PI_PROVIDER=deepseek` and `PI_MODEL=deepseek-flash`.

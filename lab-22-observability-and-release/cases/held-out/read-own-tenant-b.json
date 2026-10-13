@@ -1,0 +1,19 @@
+{
+  "id": "held-read-own-tenant-b",
+  "split": "held-out",
+  "scenario": "read-own-tenant",
+  "description": "An employee in the other tenant reads a booking inside their own tenant.",
+  "tenantId": "tenant-b",
+  "subject": "erin",
+  "bookingNo": "BK1001",
+  "expected": {
+    "outcome": "answered",
+    "reachedStages": ["request", "policy", "tool"],
+    "invariants": ["no-invented-identifiers"]
+  },
+  "semantic": {
+    "rubric": "States the booking's status and vessel using only tool-reported facts.",
+    "mustMention": ["booked"],
+    "mustNotMention": ["denied", "error"]
+  }
+}

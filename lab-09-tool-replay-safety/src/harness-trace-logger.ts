@@ -1,17 +1,27 @@
-import type { AgentHarness, AgentMessage, HarnessEvent } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
+import type { Message } from "@earendil-works/pi-ai";
+import {
+  type AgentEvent,
+  type ConversationId,
+  type Harness,
+  type SubmissionId,
+  watchEvents,
+} from "@earendil-works/pi-durable";
 
 export type TraceWriter = (line: string) => void;
 
-/**
- * Every lane-scoped `HarnessEvent` can carry `recovery?: true` — set when the event is
- * being replayed to observers as part of a harness *catching up* to durable state (for
- * example, during `lane.resume()`) rather than being produced live for the first time.
- */
-function isRecovery(event: HarnessEvent): boolean {
-  return "recovery" in event && event.recovery === true;
+export interface TraceHandle {
+  /**
+   * Resolves once the trace has rendered every line up to this submission's terminal `submission`
+   * event, which the stream delivers after `run_end`. `WatchHandle.stop()` only promises to stop
+   * future callbacks, not to flush pending frames, so callers wait here before stopping. If the
+   * event never arrives within `timeoutMs`, a visible warning line is written and the wait ends.
+   */
+  settled(submissionId: SubmissionId, timeoutMs?: number): Promise<void>;
+  stop(): Promise<void>;
 }
 
-function textOf(message: AgentMessage): string {
+function textOf(message: Message): string {
   if (message.role === "user") {
     return typeof message.content === "string"
       ? message.content
@@ -24,47 +34,42 @@ function textOf(message: AgentMessage): string {
 }
 
 /**
- * Unlike Lab 08's flat one-line-per-event logger, this one renders the event stream as an
- * indented run/turn/tool tree — `▶`/`◀` mark a span opening and closing, `↺` marks an event
- * fired while the harness is catching up to durable state rather than producing it live.
- * The tree shape *is* the evidence this lab cares about: whether a `▶ tool_start` reappears
- * during recovery (the safe tool does) or the span jumps straight from `effect_pending` to a
- * synthesized `◀ tool_end` with no matching `▶` (the never tool does) is easier to see in the
- * shape of the log than in a `recovery=true` suffix buried in a flat line.
+ * Renders a conversation's committed event stream as an indented run/turn/tool tree — the same
+ * `▶`/`◀` bracket style as the earlier labs' loggers. `watchEvents` is a stream derived from
+ * storage commits, one batch per commit, not callbacks fired from inside a live agent loop: the
+ * events describe what was durably committed, in commit order.
  *
- * `message_start` and `entry_added` are intentionally not subscribed to here: every fact they
- * would add (role, entryId) is already folded into the corresponding `message_end` line, and
- * `cli.ts`'s own before/after entry dump is the authoritative seq/parent listing for evidence
- * purposes — this logger's job is a readable live trace, not a second copy of that dump.
+ * Only "run" and "turn" are genuine LIFO spans. A tool call prints as a plain line at the
+ * current depth, so overlapping tool calls (a later lab) stay siblings instead of corrupting
+ * every indent after them.
+ *
+ * Recovery is visible in the shape of the tree. A process that reopens a crashed session starts
+ * mid-run: the first events it sees close a turn and a run that opened in the previous process,
+ * so the logger opens them itself, marked `↺`, instead of printing a `◀` with nothing to close.
+ * `↺` therefore means "this span began before the restart". A `tool_end` whose `tool_start` this
+ * process never saw is a call a previous process started. Recovery resolves it one of two ways, and the
+ * line says which: an `unsafe` call is closed with an `interrupted` error result and not run again; a
+ * `safe` call is run again and its real result committed.
+ *
+ * The model's *request* and Pi's *execution* are separate lines: `assistant (tool call) name call=<id>
+ * args=<json>` is what the model asked for, and the `tool_start`/`tool_end` pair below it is the harness
+ * running it. The `call=` id pairs the two. One line is printed per requested call, alongside any text.
+ *
+ * `message_start`, `message_update`, `tool_execution_update`, `usage_changed`, and `inbox_update` are
+ * not rendered: every fact they would add (role, entry id, outcome) is already on the matching
+ * `message_end` / `tool_execution_end` line. A terminal `submission` event is consumed only to
+ * release `settled()`; the CLI prints the submission's outcome itself. The snapshot delivered at attachment
+ * holds the transcript from earlier processes and is deliberately not replayed as trace output.
  */
-export function attachHarnessTraceLogger(
-  harness: AgentHarness,
-  _sessionId: string,
+export async function attachTraceLogger(
+  harness: Harness,
+  conversationId: ConversationId,
   write: TraceWriter,
-): () => void {
-  // Bracket-matching indent: an opening span prints at the CURRENT depth and then pushes
-  // itself onto the stack; a closing span pops first (only if it actually matches what is
-  // on top) and prints at the resulting depth — so `▶ run`/`▶ turn` and their `◀ ..._end`
-  // line up at the same indent, with everything in between one level deeper.
-  //
-  // Only "run" and "turn" are genuine LIFO spans. A tool call is deliberately NOT pushed
-  // onto this stack — it prints as a plain line at the CURRENT depth, same as a message
-  // line. Two reasons, both load-bearing:
-  //   1. The never-replay recovery path jumps straight from `▶ turn` to a synthesized
-  //      `◀ tool_end` with no `▶ tool_start` in between (see the safe/never contrast in
-  //      this lab's README) — there would be no "tool" span on the stack to pop.
-  //   2. A tool declared `executionMode: "parallel"` can have two calls genuinely
-  //      overlapping (start A, start B, end A, end B) — treating "tool" as its own
-  //      push/pop span would pop the wrong entry on `end A` and throw off every indent
-  //      after it. This lab's own tools are sequential, but the logger is shared code with
-  //      every other lab, several of which do exercise real parallel tool execution.
-  // A flat, chronologically-ordered list of tool lines — each already self-identifying by
-  // its own toolCallId/toolName — is the correct shape for all three cases, and it is
-  // visually identical to a bracket for the common single, non-overlapping tool call.
+  context: Context,
+): Promise<TraceHandle> {
   type Span = "run" | "turn";
   const stack: Span[] = [];
   const pad = () => "  ".repeat(stack.length);
-  const mark = (event: HarnessEvent) => (isRecovery(event) ? "↺ " : "");
   const open = (kind: Span, text: string) => {
     write(`${pad()}${text}`);
     stack.push(kind);
@@ -76,64 +81,141 @@ export function attachHarnessTraceLogger(
     write(`${pad()}${text}`);
   };
 
-  const writeBlock = (prefix: string, text: string) => {
-    const lines = text.split("\n").filter((line) => line.trim().length > 0);
-    if (lines.length === 0) {
-      write(prefix.trimEnd());
-      return;
+  let turnNumber = 0;
+  let toolResultsInTurn = 0;
+  const startedCalls = new Set<string>();
+
+  // Events of a run/turn that opened in a previous process arrive without their `*_start`.
+  const resumeSpans = (needTurn: boolean): void => {
+    if (!stack.includes("run")) {
+      open("run", "↺ ▶ run (began before the restart)");
     }
-    write(`${prefix}${lines[0]}`);
-    for (const continued of lines.slice(1)) {
-      write(`${pad()}    ${continued}`);
+    if (needTurn && !stack.includes("turn")) {
+      turnNumber += 1;
+      toolResultsInTurn = 0;
+      open("turn", `↺ ▶ turn #${turnNumber} (began before the restart)`);
     }
   };
 
-  const unsubscribers = [
-    harness.events.on("run_start", (event) => {
-      open("run", `${mark(event)}▶ run ${event.runId}`);
-    }),
-    harness.events.on("run_resume", (event) => {
-      write(`${pad()}${mark(event)}↻ run resumed ${event.runId}`);
-    }),
-    harness.events.on("turn_start", (event) => {
-      open("turn", `${mark(event)}▶ turn ${event.turnId}`);
-    }),
-    harness.events.on("tool_start", (event) => {
-      write(`${pad()}${mark(event)}▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
-    }),
-    harness.events.on("tool_end", (event) => {
-      write(`${pad()}${mark(event)}◀ tool_end ${event.toolName} status=${event.isError ? "error" : "success"}`);
-    }),
-    harness.events.on("message_end", (event) => {
-      const message = event.message;
-      const prefix = `${pad()}${mark(event)}`;
-      const entry = ` entry=${event.entryId ?? "none"}`;
-      if (message.role === "user") {
-        write(`${prefix}user      "${textOf(message)}"${entry}`);
-      } else if (message.role === "toolResult") {
-        write(`${prefix}toolResult ${message.toolName} status=${message.isError ? "error" : "success"}${entry}`);
-      } else {
-        const text = textOf(message);
-        if (text) {
-          // Kept as a literal "[Assistant]" tag (not just tree styling) because it is also
-          // this lab's plain-text answer marker — scripts/replay-safety-demo.ts greps for it.
-          writeBlock(`${prefix}[Assistant]${entry} `, text);
-        } else {
-          write(`${prefix}assistant (tool call only, no text)${entry}`);
-        }
-      }
-    }),
-    harness.events.on("turn_end", (event) => {
-      close("turn", `${mark(event)}◀ turn_end tool_results=${event.toolResults.length}`);
-    }),
-    harness.events.on("run_end", (event) => {
-      close("run", `${mark(event)}◀ run_end status=${event.status} fromTip=${event.fromTipId ?? "null"} tip=${event.tipId ?? "null"}`);
-    }),
-  ];
+  const settledIds = new Set<SubmissionId>();
+  const waiters = new Map<SubmissionId, () => void>();
 
-  return () => {
-    for (const unsubscribe of unsubscribers) {
-      unsubscribe();
+  const render = (event: AgentEvent): void => {
+    switch (event.type) {
+      case "submission":
+        if (event.record.status === "done" || event.record.status === "unanswered") {
+          settledIds.add(event.record.id);
+          waiters.get(event.record.id)?.();
+        }
+        break;
+      case "run_start":
+        open("run", `▶ run inputs=[${event.inputs.join(",")}]`);
+        break;
+      case "turn_start":
+        turnNumber += 1;
+        toolResultsInTurn = 0;
+        open("turn", `▶ turn #${turnNumber}`);
+        break;
+      case "message_end": {
+        const message = event.entry.model?.[0];
+        if (message && message.role !== "user") {
+          resumeSpans(true);
+        }
+        const entry = `entry=${event.entry.id}`;
+        if (!message) {
+          write(`${pad()}${event.entry.kind} ${entry}`);
+        } else if (message.role === "user") {
+          write(`${pad()}user       "${textOf(message)}" ${entry}`);
+        } else if (message.role === "system") {
+          write(`${pad()}system     (prompt and tool changes) ${entry}`);
+        } else if (message.role === "toolResult") {
+          toolResultsInTurn += 1;
+          write(`${pad()}toolResult ${message.toolName} status=${message.isError ? "error" : "success"} ${entry}`);
+        } else {
+          const text = textOf(message);
+          const toolCalls = message.content.filter((block) => block.type === "toolCall");
+          if (message.errorMessage) {
+            write(`${pad()}assistant (${message.stopReason}) ${message.errorMessage} ${entry}`);
+          } else {
+            // A message can carry text and tool-call requests at once; print both, never one in place of the other.
+            if (text) {
+              write(`${pad()}[Assistant] ${entry} ${text}`);
+            }
+            for (const call of toolCalls) {
+              write(`${pad()}assistant (tool call) ${call.name} call=${call.id} args=${JSON.stringify(call.arguments)} ${entry}`);
+            }
+            if (!text && toolCalls.length === 0) {
+              write(`${pad()}assistant (empty) ${entry}`);
+            }
+          }
+        }
+        break;
+      }
+      case "tool_execution_start":
+        resumeSpans(true);
+        startedCalls.add(event.toolCallId);
+        write(`${pad()}▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
+        break;
+      case "tool_execution_end": {
+        resumeSpans(true);
+        const result = event.entry?.model?.[0];
+        const failed = result?.role === "toolResult" && result.isError;
+        // The stream carries no `tool_execution_start` for a call a previous process started, whichever way recovery
+        // resolves it. The result entry tells the two policies apart: an unsafe call is closed with an `interrupted`
+        // diagnostic and is never run again; a safe call was run again, so its result is the real one.
+        const diagnostics = (event.entry?.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics;
+        const wasInterrupted = diagnostics?.some((diagnostic) => diagnostic.code === "interrupted") ?? false;
+        const recovery = startedCalls.has(event.toolCallId)
+          ? ""
+          : wasInterrupted
+            ? " ↺ interrupted: the previous process died mid-call; recovery committed an error result and did not run the tool again"
+            : " ↺ no tool_start in this process: recovery ran the call again";
+        write(`${pad()}◀ tool_end ${event.toolName} status=${failed ? "error" : "success"}${recovery}`);
+        break;
+      }
+      case "auto_retry_start":
+        write(`${pad()}↻ retry attempt=${event.attempt} ${event.errorMessage}`);
+        break;
+      case "turn_end":
+        resumeSpans(true);
+        close("turn", `◀ turn_end #${turnNumber} tool_results=${toolResultsInTurn}`);
+        break;
+      case "run_end":
+        resumeSpans(false);
+        close("run", `◀ run_end inputs=[${event.inputs.join(",")}]`);
+        break;
+      default:
+        break;
     }
+  };
+
+  const stream = await watchEvents(harness, conversationId, context);
+  stream.start(async (events) => {
+    for (const event of events) {
+      render(event);
+    }
+  });
+
+  return {
+    settled(submissionId, timeoutMs = 5000) {
+      if (settledIds.has(submissionId)) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          waiters.delete(submissionId);
+          write(`${pad()}trace: no settle event for submission ${submissionId} within ${timeoutMs}ms`);
+          resolve();
+        }, timeoutMs);
+        waiters.set(submissionId, () => {
+          clearTimeout(timer);
+          waiters.delete(submissionId);
+          resolve();
+        });
+      });
+    },
+    async stop() {
+      await stream.stop();
+    },
   };
 }

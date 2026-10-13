@@ -18,6 +18,24 @@
     "location": "CNSHA"
   },
   {
+    "containerNo": "MSKU2345678",
+    "eventType": "GATE_IN",
+    "timestamp": "2026-09-09T21:40:00Z",
+    "location": "CNSHA"
+  },
+  {
+    "containerNo": "MSKU2345678",
+    "eventType": "LOAD",
+    "timestamp": "2026-09-10T13:45:00Z",
+    "location": "CNSHA"
+  },
+  {
+    "containerNo": "MSKU2345678",
+    "eventType": "DEPARTURE",
+    "timestamp": "2026-09-10T15:00:00Z",
+    "location": "CNSHA"
+  },
+  {
     "containerNo": "MSKU7654321",
     "eventType": "GATE_IN",
     "timestamp": "2026-09-11T20:00:00Z",

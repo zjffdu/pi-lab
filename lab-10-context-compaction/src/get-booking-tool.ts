@@ -1,5 +1,5 @@
-import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import { defineTool } from "@earendil-works/pi-durable";
 
 import type { BookingRepository } from "./booking-repository.js";
 
@@ -13,44 +13,34 @@ const getBookingParameters = Type.Object(
   { additionalProperties: false },
 );
 
-interface GetBookingDetails {
-  bookingNo: string;
-  found: boolean;
-}
-
 export class BookingNotFoundError extends Error {
   public constructor(bookingNo: string) {
-    super(`No booking found for: ${bookingNo}`);
+    super(`Booking not found: ${bookingNo}`);
     this.name = "BookingNotFoundError";
   }
 }
 
 /**
- * Read-only, declared `replay: "safe"` — this lab is not about recovery (Lab 08/09 covered
- * that), but a tool result is still durable session evidence, and this is where the one
- * vulnerable early fact — `customsHoldReason` on BK1002 — actually enters the transcript.
+ * Read-only. This is where the lab's one vulnerable early fact — `customsHoldReason` on BK1002 —
+ * enters the transcript: as the content of a durable `pi.tool-result` entry.
  */
-export function createGetBookingTool(
-  repository: BookingRepository,
-): AgentHarnessTool<undefined, typeof getBookingParameters, GetBookingDetails> {
-  return {
+export function createGetBookingTool(repository: BookingRepository) {
+  return defineTool({
     name: "get_booking",
-    label: "Get booking",
     description:
-      "Look up one booking's route, vessel, planned dates, and any flagged hold reason. Read-only.",
+      "Look up one booking's route, vessel, planned dates, container numbers (one or several), and any flagged customs hold reason. Read-only.",
     parameters: getBookingParameters,
     executionMode: "sequential",
-    replay: "safe",
-    async execute(_toolCallId, params) {
-      const booking = repository.findByBookingNo(params.bookingNo);
+    async execute(args) {
+      const booking = repository.findByBookingNo(args.bookingNo);
       if (!booking) {
-        throw new BookingNotFoundError(params.bookingNo);
+        throw new BookingNotFoundError(args.bookingNo);
       }
 
       return {
         content: [{ type: "text", text: JSON.stringify(booking) }],
-        details: { bookingNo: params.bookingNo, found: true },
+        details: { bookingNo: args.bookingNo },
       };
     },
-  };
+  });
 }

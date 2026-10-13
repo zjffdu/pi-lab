@@ -1,27 +1,30 @@
+import type { Context } from "@earendil-works/chord";
+import type { Models } from "@earendil-works/pi-ai";
 import {
-  AgentHarness,
-  type AgentLane,
-  type Context,
-  type OpenOperation,
-  type Session,
-} from "@earendil-works/pi-agent-core";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+  type Conversation,
+  createRegistry,
+  defineExtension,
+  Harness,
+  type HarnessInspection,
+  section,
+  type Storage,
+} from "@earendil-works/pi-durable";
 
 import { BookingRepository } from "./booking-repository.js";
 import { ContainerEventRepository } from "./container-event-repository.js";
 import { createGetBookingTool } from "./get-booking-tool.js";
 import { createGetContainerEventsTool } from "./get-container-events-tool.js";
 
-const SYSTEM_PROMPT = `You are a booking-operations assistant in a learning lab.
+export const SYSTEM_PROMPT = `You are a booking-operations assistant in a learning lab.
 
 Rules:
-- Call get_booking before making any claim about a booking's route or vessel. Call
-  get_container_events before making any claim about a container's movement history. Both are
-  read-only.
-- This session's history may have been rearranged by navigating back to an earlier point and
-  continuing from there. Use only what is actually in front of you right now: the current
-  transcript, any "conversation history before this point was summarized" block, and tool
-  results. Do not assume a fact from a different conversation you are not shown still applies.
+- Call get_booking before making any claim about a booking's route, vessel, dates, or containers.
+  A booking can have several containers: call get_container_events once per container before
+  making any claim about movement, and never generalize one container's events to the whole
+  booking. Both tools are read-only.
+- Use only what is in the transcript in front of you right now: this conversation's own history
+  and tool results. A conversation can be a fork of an earlier one and share its history up to the
+  fork point; nothing that happened after that point in a different conversation is visible to you.
 - If a booking or fact was not established earlier in what you can currently see, say so plainly
   instead of guessing or inventing a value.
 - Keep answers concise.`;
@@ -36,64 +39,89 @@ export function modelSelectionFromEnvironment(
 ): ModelSelection {
   return {
     provider: environment.PI_PROVIDER?.trim() || "deepseek",
-    modelId: environment.PI_MODEL?.trim() || "deepseek-v4-flash",
+    modelId: environment.PI_MODEL?.trim() || "deepseek-flash",
   };
 }
 
-export interface OpenMainLaneResult {
-  harness: AgentHarness;
-  lane: AgentLane;
-  /** Lanes with a durable operation left open when the harness attached to this session. */
-  open: OpenOperation[];
-}
+/** Fails at startup with the catalog's real ids, instead of failing inside the first model request. */
+export function assertModelAvailable(models: Models, selection: ModelSelection): void {
+  if (models.getModel(selection.provider, selection.modelId)) {
+    return;
+  }
 
-export interface OpenMainLaneOptions {
-  selection?: ModelSelection;
+  const available = models
+    .getModels(selection.provider)
+    .map((candidate) => candidate.id)
+    .slice(0, 12)
+    .join(", ");
+  throw new Error(
+    `Unknown model ${selection.provider}/${selection.modelId}. ` +
+      `Available model ids include: ${available || "none"}`,
+  );
 }
 
 /**
- * Same attach contract as Labs 07-10's `openMainLane`: `AgentHarness.create()` restores every
- * lane already recorded in the session before returning. This lab registers the same two
- * read-only tools Lab 10 uses (`get_booking`, `get_container_events`) and does not touch
- * compaction settings — the harness's own large default (`keepRecentTokens: 20000`) never
- * triggers on this lab's short seeded conversations, so nothing here competes with the tree
- * navigation this lab is actually about.
+ * Tools and system-prompt sections reach the harness through a registry of named extensions that
+ * this process owns. Nothing in the registry is stored: a conversation stores only the extension
+ * names it selects, so the code must be installed again in every process that reopens the session —
+ * including for a fork, which selects the same extensions its parent had at the fork entry.
  */
-export async function openMainLane(
-  session: Session,
+export function createBookingRegistry(
+  bookings = BookingRepository.fromDefaultFixture(),
+  containerEvents = ContainerEventRepository.fromDefaultFixture(),
+) {
+  const registry = createRegistry();
+  registry.install(
+    defineExtension({
+      name: "booking",
+      tools: [createGetBookingTool(bookings), createGetContainerEventsTool(containerEvents)],
+      sections: [section("preamble", () => SYSTEM_PROMPT, { tag: false })],
+    }),
+  );
+  return registry;
+}
+
+export interface OpenedHarness {
+  harness: Harness;
+  root: Conversation;
+  /** Unfinished tasks and unsettled submissions found when the harness attached (Lab 08's topic). */
+  inspection: HarnessInspection;
+}
+
+export interface OpenHarnessOptions {
+  models: Models;
+  selection?: ModelSelection;
+  registry?: ReturnType<typeof createBookingRegistry>;
+}
+
+/**
+ * Attaches a fresh `Harness` to an already-open storage and returns its root conversation. Every
+ * other conversation of the session — the forks — is reached through `harness.conversation(id)` or
+ * `harness.scanConversations()`, not through this function.
+ *
+ * Automatic compaction is switched off so nothing summarizes behind the experiment's back: this lab
+ * is about which entries a branch inherits, not about what the model is allowed to forget.
+ */
+export async function openHarness(
+  storage: Storage,
+  options: OpenHarnessOptions,
   context: Context,
-  options: OpenMainLaneOptions = {},
-): Promise<OpenMainLaneResult> {
+): Promise<OpenedHarness> {
   const selection = options.selection ?? modelSelectionFromEnvironment();
-  const models = builtinModels();
-  const model = models.getModel(selection.provider, selection.modelId);
+  assertModelAvailable(options.models, selection);
 
-  if (!model) {
-    const available = models
-      .getModels(selection.provider)
-      .map((candidate) => candidate.id)
-      .slice(0, 12)
-      .join(", ");
-    throw new Error(
-      `Unknown model ${selection.provider}/${selection.modelId}. ` +
-        `Available model ids include: ${available || "none"}`,
-    );
-  }
-
-  const bookingRepository = BookingRepository.fromDefaultFixture();
-  const containerEventRepository = ContainerEventRepository.fromDefaultFixture();
-
-  const { harness, open } = await AgentHarness.create(
+  const harness = await Harness.open(
+    storage,
     {
-      session,
-      models,
-      model,
-      tools: [createGetBookingTool(bookingRepository), createGetContainerEventsTool(containerEventRepository)],
-      systemPrompt: SYSTEM_PROMPT,
+      models: options.models,
+      registry: options.registry ?? createBookingRegistry(),
+      settings: { compaction: { enabled: false, backgroundTokens: 0 } },
     },
     context,
   );
-
-  const lane = await harness.lane("main", context);
-  return { harness, lane, open };
+  const inspection = await harness.inspect(context);
+  const root = await harness.root(context, {
+    agent: { model: { provider: selection.provider, modelId: selection.modelId } },
+  });
+  return { harness, root, inspection };
 }

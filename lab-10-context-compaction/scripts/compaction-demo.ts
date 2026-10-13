@@ -2,27 +2,34 @@ import "dotenv/config";
 
 import { fileURLToPath } from "node:url";
 
-import { estimateContextTokens, estimateTokens, type CompactionEntry, type Entry } from "@earendil-works/pi-agent-core";
+import type { Usage } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { estimateContextTokens as usageAnchoredEstimate } from "@earendil-works/pi-ai/utils/estimate";
+import type { CompactionPolicy, EntryRecord } from "@earendil-works/pi-durable";
 
-import { openMainLane } from "../src/create-harness.js";
-import { attachHarnessTraceLogger } from "../src/harness-trace-logger.js";
-import { BACKGROUND_CONTEXT, createSessionRepo, openOrCreateSession } from "../src/session-store.js";
+import { BookingRepository } from "../src/booking-repository.js";
+import {
+  compactConversation,
+  compactionEntries,
+  compactionSummaryText,
+  estimatedContextTokens,
+  extractShipmentIdentifiers,
+  keepRecentTokensForLastTurns,
+} from "../src/compaction.js";
+import { compactionPolicyFromEnvironment, modelSelectionFromEnvironment, openRootConversation } from "../src/create-harness.js";
+import { attachTraceLogger } from "../src/harness-trace-logger.js";
+import { BACKGROUND_CONTEXT, openSessionStorage } from "../src/session-store.js";
+import { listEntries } from "../src/transcript.js";
 
 /**
- * Deterministic script of prompts. Turn 2 is this lab's one "vulnerable early fact" — a
- * customs hold on BK1002, established once and never repeated — placed early enough that this
- * lab's tiny `keepRecentTokens` budget (see `compactionSettingsFromEnvironment`) pushes it past
- * the compaction cut point into the summarized region rather than the retained tail. Turns 5-8
- * are deliberately short, generic, one-sentence filler: they grow the conversation long enough
- * that the fixed summary/turn-prefix overhead compaction adds is a small fraction of what it
- * removes (see README section 5 for what happened when this lab tried a 5-turn conversation
- * instead), and they never repeat any early fact, so the retained tail after compaction has
- * real content of its own.
+ * Turn 2 is this lab's one "vulnerable early fact": BK1002's customs hold enters the transcript
+ * exactly once, as the content of that turn's `get_booking` tool result, and is never repeated.
+ * Turns 5-8 are short filler that never mention it again.
  */
 const SEED_PROMPTS = [
   "Look up booking BK1001 and tell me its route, vessel, and planned dates.",
   "Now look up booking BK1002 as well. Flag anything unusual before we proceed.",
-  "Check the container movement events for MSKU1234567 and summarize them briefly.",
+  "Check the container movement events for every container of BK1001 and summarize them briefly.",
   "Check the container movement events for MSKU7654321 and summarize them briefly.",
   "Given what you know so far, which of the two bookings looks more time-sensitive, and why?",
   "If the customer asks for an ETA update tomorrow, what would you check first, in one sentence?",
@@ -33,11 +40,11 @@ const SEED_PROMPTS = [
 const FOLLOW_UP_PROMPT =
   "Earlier we discussed two bookings. Which one had an unusual note flagged, and what was the note?";
 
-const HOLD_KEYWORDS = ["phytosanitary", "customs hold", "customs"] as const;
-
-const SESSION_GROUP = "lab-10-context-compaction-demo";
+const TURNS_TO_KEEP = 3;
+const HOLD_KEYWORDS = ["phytosanitary", "customs hold"] as const;
 const SESSIONS_ROOT = fileURLToPath(new URL("../session-data", import.meta.url));
 const RUN_ID = Date.now();
+const context = BACKGROUND_CONTEXT;
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -45,73 +52,38 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
-function assistantAnswerText(entry: Entry | undefined): string {
-  if (!entry || entry.type !== "message" || entry.message.role !== "assistant") {
+function assistantUsage(entry: EntryRecord | undefined): Usage | undefined {
+  const message = entry?.model?.[0];
+  return message?.role === "assistant" ? message.usage : undefined;
+}
+
+/** What the provider actually read for that request, from its own report — not an estimate. */
+function promptTokens(usage: Usage | undefined): number {
+  return usage ? usage.input + usage.cacheRead + usage.cacheWrite : 0;
+}
+
+function answerText(entry: EntryRecord | undefined): string {
+  const message = entry?.model?.[0];
+  if (message?.role !== "assistant") {
     return "";
   }
-  return entry.message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join(" ");
-}
-
-function mentionsHold(text: string): boolean {
-  const lower = text.toLowerCase();
-  return HOLD_KEYWORDS.some((keyword) => lower.includes(keyword));
-}
-
-const TURNS_TO_KEEP = 3;
-
-/**
- * A fixed `keepRecentTokens` constant is fragile against real, variable model output length:
- * the exact same seed prompt can produce an assistant reply a few tokens longer or shorter on
- * different runs, which can shift the cut point mid-turn (`isSplitTurn: true`) instead of
- * landing cleanly on a turn boundary — an earlier iteration of this script hit that: the cut
- * repeatedly split turn 5, and the extra turn-prefix summary that split produces was verbose
- * enough to outweigh what compaction actually saved (see README section 5). Computing
- * `keepRecentTokens` from the *actual* seeded transcript's own `estimateTokens` — the exact
- * same heuristic `findCutPoint` itself uses per message — instead guarantees the cut lands
- * exactly on turn `TURNS_TO_KEEP` messages back from the tip, every run, regardless of exact
- * wording.
- */
-function keepRecentTokensForLastTurns(entries: Entry[], turnsToKeep: number): number {
-  const messageEntries = [...entries]
-    .sort((a, b) => a.seq - b.seq)
-    .filter((entry): entry is Extract<Entry, { type: "message" }> => entry.type === "message");
-
-  const turnStartIndices = messageEntries
-    .map((entry, index) => (entry.message.role === "user" ? index : -1))
-    .filter((index) => index >= 0);
-
-  const keepFromIndex = turnStartIndices.at(-turnsToKeep);
-  if (keepFromIndex === undefined) {
-    throw new Error(`conversation does not have ${turnsToKeep} turns to compute keepRecentTokens from`);
-  }
-
-  return messageEntries.slice(keepFromIndex).reduce((sum, entry) => sum + estimateTokens(entry.message), 0);
-}
-
-interface ContextSample {
-  label: string;
-  messages: number;
-  tokens: number;
+  return message.content.filter((block) => block.type === "text").map((block) => block.text).join(" ");
 }
 
 interface ScenarioResult {
   label: string;
-  sessionId: string;
-  entriesBeforeCompaction: number;
-  entriesAfterCompaction: number;
-  compaction: CompactionEntry;
-  lastSeedContextTokens: number;
-  /** `estimateTokens(summary) + sum(estimateTokens(retainedTail))` — the reconstructed
-   * post-compaction context measured the same message-by-message way `findCutPoint` itself
-   * measures cost, deliberately NOT via `estimateContextTokens` on the live `transform_context`
-   * payload (see README section 5: that path anchors on the last assistant message's *stale*,
-   * pre-compaction `usage.totalTokens` once that message is recycled into `retainedTail`, which
-   * overstates the real post-compaction request size). */
-  reconstructedContextTokens: number;
-  followUpContextTokens: number;
+  entriesBefore: number;
+  entriesAfter: number;
+  summaryTokens: number;
+  headKind: string;
+  estimatedBefore: number;
+  estimatedAfter: number;
+  usageAnchoredBefore: string;
+  usageAnchoredAfter: string;
+  providerPromptBefore: number;
+  providerPromptAfter: number;
+  summary: string;
+  unknownIdentifiers: string[];
   followUpAnswer: string;
   answerMentionsHold: boolean;
 }
@@ -119,113 +91,121 @@ interface ScenarioResult {
 async function runScenario(label: string, customInstructions: string | undefined): Promise<ScenarioResult> {
   console.log(`\n########## Scenario: ${label} ##########`);
   const sessionId = `compaction-${label}-${RUN_ID}`;
-  const context = BACKGROUND_CONTEXT;
+  const models = builtinModels();
+  const compaction: Partial<CompactionPolicy> = compactionPolicyFromEnvironment();
 
-  const repo = createSessionRepo(SESSIONS_ROOT);
-  const { session } = await openOrCreateSession(repo, sessionId, SESSION_GROUP, context);
-  const { harness, lane } = await openMainLane(session, context);
+  const { storage } = await openSessionStorage(SESSIONS_ROOT, sessionId, context);
+  const { harness, root } = await openRootConversation(
+    storage,
+    { models, selection: modelSelectionFromEnvironment(), compaction },
+    context,
+  );
+  const trace = await attachTraceLogger(harness, root.id, (line) => console.log(line), context);
 
-  const detachTrace = attachHarnessTraceLogger(harness, sessionId, (line) => console.log(line));
-  const contextSamples: ContextSample[] = [];
-  const detachSampler = harness.hooks.on("transform_context", (event) => {
-    const estimate = estimateContextTokens(event.messages);
-    contextSamples.push({ label: `sample-${contextSamples.length}`, messages: event.messages.length, tokens: estimate.tokens });
-    return undefined;
-  });
+  async function ask(prompt: string) {
+    console.log(`[User][${sessionId}] ${prompt}`);
+    const submission = await root.submit({ type: "input", content: prompt }, context);
+    const settled = await submission.wait(context);
+    await trace.settled(settled.id);
+    assert(settled.status === "done", `${label}: turn must settle done, got ${JSON.stringify(settled)}`);
+    return settled;
+  }
 
   console.log(`\n=== Step 1: seed ${SEED_PROMPTS.length} deterministic turns ===`);
   for (const prompt of SEED_PROMPTS) {
-    console.log(`[User][${sessionId}] ${prompt}`);
-    const result = await lane.prompt(prompt, undefined, context);
-    assert(result.ok, `${label}: seed turn must be admitted: ${!result.ok ? result.error.message : ""}`);
-    if (result.ok && result.value.status !== "suspended") {
-      assert(result.value.status === "completed", `${label}: seed turn must complete: ${JSON.stringify(result.value.error)}`);
-    }
+    await ask(prompt);
   }
 
-  const lastSeedContextTokens = contextSamples.at(-1)?.tokens ?? 0;
-  const entriesAfterSeed = await lane.findEntries(undefined, context);
-  const entriesBeforeCompaction = entriesAfterSeed.length;
+  const entriesBefore = await listEntries(root, context);
+  const viewBefore = await root.context(context);
+  const lastBefore = assistantUsage(entriesBefore.findLast((entry) => entry.kind === "pi.assistant"));
+  const providerPromptBefore = promptTokens(lastBefore);
+  const estimatedBefore = estimatedContextTokens(viewBefore);
+  const anchoredBefore = usageAnchoredEstimate(viewBefore.messages);
   console.log(
-    `\n=== Step 2: measure context before compaction (entries=${entriesBeforeCompaction}, ` +
-      `lastRequestTokens=${lastSeedContextTokens}) ===`,
+    `\n=== Step 2: measure before compaction: entries=${entriesBefore.length} contextMessages=${viewBefore.messages.length} ` +
+      `estimatedTokens=${estimatedBefore} providerReportedPromptTokens(last request)=${providerPromptBefore} ===`,
   );
 
-  const keepRecentTokens = keepRecentTokensForLastTurns(entriesAfterSeed, TURNS_TO_KEEP);
-  const currentSettings = await harness.getCompactionSettings(context);
-  await harness.setCompactionSettings({ ...currentSettings, keepRecentTokens }, context);
+  compaction.keepRecentTokens = keepRecentTokensForLastTurns(viewBefore, TURNS_TO_KEEP);
   console.log(
-    `[Compaction][${sessionId}] computed keepRecentTokens=${keepRecentTokens} to retain exactly the last ${TURNS_TO_KEEP} turns ` +
-      `(reserveTokens stays ${currentSettings.reserveTokens})`,
+    `[Compaction][${sessionId}] keepRecentTokens=${compaction.keepRecentTokens} computed to keep the last ${TURNS_TO_KEEP} turns`,
   );
 
   console.log(
-    `\n=== Step 3: run lane.compact()${customInstructions ? ` with customInstructions="${customInstructions}"` : " (default settings)"} ===`,
+    `\n=== Step 3: Conversation.compact()${customInstructions ? ` with instructions="${customInstructions}"` : " (no instructions)"} ===`,
   );
-  const compactionResult = await lane.compact(customInstructions ? { customInstructions } : undefined, context);
-  assert(compactionResult.ok, `${label}: compaction must be admitted: ${!compactionResult.ok ? compactionResult.error._tag : ""}`);
-  if (!compactionResult.ok) {
-    throw new Error("unreachable");
-  }
+  const outcome = await compactConversation(harness, root, customInstructions, context);
+  assert(outcome.kind === "placed", `${label}: compaction must be placed, got ${JSON.stringify(outcome)}`);
+
+  const entriesAfter = await listEntries(root, context);
+  assert(entriesAfter.length === entriesBefore.length + 1, `${label}: exactly one entry must be added (${entriesBefore.length} -> ${entriesAfter.length})`);
   assert(
-    compactionResult.value.compaction.status === "completed",
-    `${label}: compaction must complete: ${JSON.stringify(compactionResult.value.compaction.error)}`,
+    JSON.stringify(entriesAfter.slice(0, entriesBefore.length)) === JSON.stringify(entriesBefore),
+    `${label}: every pre-compaction entry must be unchanged`,
   );
 
-  const entriesAfterCompaction = (await lane.findEntries(undefined, context)).length;
-  const allEntries = await lane.findEntries(undefined, context);
-  const compactionEntry = allEntries.find((entry): entry is CompactionEntry => entry.type === "compaction");
-  assert(Boolean(compactionEntry), `${label}: a durable compaction entry must exist after lane.compact()`);
+  const [compactionEntry] = compactionEntries(entriesAfter);
+  assert(compactionEntry !== undefined && compactionEntry.head !== undefined, `${label}: a pi.compaction entry with a head must exist`);
+  const headEntry = entriesBefore.find((entry) => entry.id === compactionEntry!.head);
+  const headKind = headEntry?.kind ?? "unknown";
+  const turn6User = entriesBefore.filter((entry) => entry.kind === "pi.user")[SEED_PROMPTS.length - TURNS_TO_KEEP];
+  assert(headEntry?.id === turn6User?.id, `${label}: the cut must land on the user message that starts turn ${SEED_PROMPTS.length - TURNS_TO_KEEP + 1}`);
 
-  const compactionRecord = compactionEntry as CompactionEntry;
-  const summaryTokens = Math.ceil(compactionRecord.summary.length / 4);
-  const retainedTailTokens = compactionRecord.retainedTail.reduce((sum, message) => sum + estimateTokens(message), 0);
-  const reconstructedContextTokens = summaryTokens + retainedTailTokens;
-
+  const summary = compactionSummaryText(compactionEntry!);
+  const knownIdentifiers = new Set(
+    BookingRepository.fromDefaultFixture().all().flatMap((booking) => [booking.bookingNo, ...booking.containerNos]),
+  );
+  const unknownIdentifiers = extractShipmentIdentifiers(summary).filter((identifier) => !knownIdentifiers.has(identifier));
   console.log(
-    `[Compaction][${sessionId}] tokensBefore=${compactionRecord.tokensBefore} retainedTail=${compactionRecord.retainedTail.length} ` +
-      `summaryTokens=${summaryTokens} retainedTailTokens=${retainedTailTokens} reconstructedContextTokens=${reconstructedContextTokens} ` +
-      `summary="${compactionRecord.summary.slice(0, 160)}..."`,
+    `[Provenance][${sessionId}] identifiers in summary: ${extractShipmentIdentifiers(summary).join(", ")}; ` +
+      `not in the fixtures: [${unknownIdentifiers.join(", ")}]`,
   );
-
-  assert(
-    entriesAfterCompaction === entriesBeforeCompaction + 1,
-    `${label}: compaction must add exactly one new entry and must not delete the ${entriesBeforeCompaction} pre-compaction entries ` +
-      `(before=${entriesBeforeCompaction}, after=${entriesAfterCompaction})`,
+  assert(unknownIdentifiers.length === 0, `${label}: the summary must not contain an identifier absent from the fixtures: ${unknownIdentifiers.join(", ")}`);
+  const viewAfter = await root.context(context);
+  const estimatedAfter = estimatedContextTokens(viewAfter);
+  const anchoredAfter = usageAnchoredEstimate(viewAfter.messages);
+  const usageAnchoredBefore = `${anchoredBefore.tokens} (anchor@${anchoredBefore.lastUsageIndex ?? "none"})`;
+  const usageAnchoredAfter = `${anchoredAfter.tokens} (anchor@${anchoredAfter.lastUsageIndex ?? "none"})`;
+  console.log(
+    `[Compaction][${sessionId}] entry=${compactionEntry!.id} head=${compactionEntry!.head} (${headKind}) ` +
+      `contextMessages=${viewAfter.messages.length} estimatedTokens(after)=${estimatedAfter} ` +
+      `usageAnchoredEstimate(before)=${usageAnchoredBefore} (after)=${usageAnchoredAfter}`,
   );
+  assert(estimatedAfter < estimatedBefore, `${label}: the next request's context must be smaller (${estimatedBefore} -> ${estimatedAfter})`);
 
   console.log(`\n=== Step 4: ask the follow-up question ===`);
-  console.log(`[User][${sessionId}] ${FOLLOW_UP_PROMPT}`);
-  const followUpResult = await lane.prompt(FOLLOW_UP_PROMPT, undefined, context);
-  assert(followUpResult.ok, `${label}: follow-up turn must be admitted`);
+  const settled = await ask(FOLLOW_UP_PROMPT);
+  const finalEntries = await listEntries(root, context);
+  const followUpEntry = finalEntries.find((entry) => "answer" in settled && entry.id === settled.answer);
+  const followUpAnswer = answerText(followUpEntry);
+  const providerPromptAfter = promptTokens(assistantUsage(followUpEntry));
+  console.log(`[Assistant][${sessionId}] ${followUpAnswer}`);
+  console.log(`[Compaction][${sessionId}] providerReportedPromptTokens(follow-up request)=${providerPromptAfter}`);
   assert(
-    followUpResult.ok && followUpResult.value.status === "completed",
-    `${label}: follow-up turn must complete`,
+    providerPromptAfter > 0 && providerPromptAfter < providerPromptBefore,
+    `${label}: the provider must have read fewer prompt tokens after compaction (${providerPromptBefore} -> ${providerPromptAfter})`,
   );
 
-  const followUpContextTokens = contextSamples.at(-1)?.tokens ?? 0;
-  const finalEntries = await lane.findEntries(undefined, context);
-  const followUpTipId = followUpResult.ok && followUpResult.value.status !== "suspended" ? followUpResult.value.tipId : null;
-  const followUpEntry = finalEntries.find((entry) => entry.id === followUpTipId);
-  const followUpAnswer = assistantAnswerText(followUpEntry);
-  console.log(`[Assistant][${sessionId}] ${followUpAnswer}`);
-
-  detachSampler();
-  detachTrace();
+  await trace.stop();
   await harness.close(context);
-  await repo.close(context);
 
   return {
     label,
-    sessionId,
-    entriesBeforeCompaction,
-    entriesAfterCompaction,
-    compaction: compactionRecord,
-    lastSeedContextTokens,
-    reconstructedContextTokens,
-    followUpContextTokens,
+    entriesBefore: entriesBefore.length,
+    entriesAfter: entriesAfter.length,
+    summaryTokens: Math.ceil(summary.length / 3.5),
+    headKind,
+    estimatedBefore,
+    estimatedAfter,
+    usageAnchoredBefore,
+    usageAnchoredAfter,
+    providerPromptBefore,
+    providerPromptAfter,
+    summary,
+    unknownIdentifiers,
     followUpAnswer,
-    answerMentionsHold: mentionsHold(followUpAnswer),
+    answerMentionsHold: HOLD_KEYWORDS.some((keyword) => followUpAnswer.toLowerCase().includes(keyword)),
   };
 }
 
@@ -233,50 +213,37 @@ async function main(): Promise<void> {
   const defaultScenario = await runScenario("default", undefined);
   const instructedScenario = await runScenario(
     "instructed",
-    "Explicitly preserve every booking identifier, container number, and any noted hold, " +
-      "exception, or evidence gap, even if it seems minor.",
+    "Explicitly preserve every booking identifier, container number, and any noted hold, exception, or evidence gap, even if it seems minor.",
   );
+  const results = [defaultScenario, instructedScenario];
 
   console.log("\n########## Evidence summary ##########");
   console.table(
-    [defaultScenario, instructedScenario].map((scenario) => ({
-      scenario: scenario.label,
-      entriesBefore: scenario.entriesBeforeCompaction,
-      entriesAfter: scenario.entriesAfterCompaction,
-      tokensBeforeCompaction: scenario.compaction.tokensBefore,
-      retainedTailMessages: scenario.compaction.retainedTail.length,
-      reconstructedContextTokens: scenario.reconstructedContextTokens,
-      lastSeedRequestTokens: scenario.lastSeedContextTokens,
-      followUpRequestTokens_STALE_USAGE_ARTIFACT: scenario.followUpContextTokens,
-      followUpMentionsHold: scenario.answerMentionsHold,
+    results.map((result) => ({
+      scenario: result.label,
+      entries: `${result.entriesBefore} -> ${result.entriesAfter}`,
+      headKind: result.headKind,
+      estimatedBefore: result.estimatedBefore,
+      estimatedAfter: result.estimatedAfter,
+      providerPromptBefore: result.providerPromptBefore,
+      providerPromptAfter: result.providerPromptAfter,
+      usageAnchoredBefore: result.usageAnchoredBefore,
+      usageAnchoredAfter: result.usageAnchoredAfter,
+      followUpMentionsHold: result.answerMentionsHold,
     })),
   );
 
-  console.log(`\n[default] summary: ${defaultScenario.compaction.summary}`);
-  console.log(`\n[instructed] summary: ${instructedScenario.compaction.summary}`);
-  console.log(`\n[default] follow-up answer: ${defaultScenario.followUpAnswer}`);
-  console.log(`\n[instructed] follow-up answer: ${instructedScenario.followUpAnswer}`);
+  for (const result of results) {
+    console.log(`\n[${result.label}] summary:\n${result.summary}`);
+    console.log(`\n[${result.label}] follow-up answer: ${result.followUpAnswer}`);
+  }
 
-  assert(
-    defaultScenario.reconstructedContextTokens < defaultScenario.compaction.tokensBefore,
-    `default: the reconstructed post-compaction context (${defaultScenario.reconstructedContextTokens} tokens: summary + ` +
-      `retained tail) must be smaller than tokensBefore (${defaultScenario.compaction.tokensBefore})`,
-  );
-  assert(
-    instructedScenario.reconstructedContextTokens < instructedScenario.compaction.tokensBefore,
-    `instructed: the reconstructed post-compaction context (${instructedScenario.reconstructedContextTokens} tokens: summary + ` +
-      `retained tail) must be smaller than tokensBefore (${instructedScenario.compaction.tokensBefore})`,
-  );
-  assert(
-    instructedScenario.answerMentionsHold,
-    "instructed: compaction with explicit preservation instructions must keep the customs-hold fact recoverable",
-  );
+  assert(instructedScenario.answerMentionsHold, "instructed: the follow-up answer must recover the customs-hold fact");
 
   console.log("\n=== All Lab 10 context-compaction assertions passed ===");
   console.log(
     `\n[Note] default follow-up answer ${defaultScenario.answerMentionsHold ? "DID" : "did NOT"} recover the customs-hold fact; ` +
-      `instructed follow-up answer ${instructedScenario.answerMentionsHold ? "DID" : "did NOT"}. Either direction for the default ` +
-      "run is a legitimate finding worth recording verbatim in the README — this script does not assume which way it goes.",
+      `instructed ${instructedScenario.answerMentionsHold ? "DID" : "did NOT"}. This script does not assume which way the default goes.`,
   );
 }
 

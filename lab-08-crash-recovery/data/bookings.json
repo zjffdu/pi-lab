@@ -1,11 +1,25 @@
 [
   {
     "bookingNo": "BK1001",
-    "containerNo": "MSKU1234567",
+    "containerNos": [
+      "MSKU1234567",
+      "MSKU2345678"
+    ],
     "origin": "CNSHA",
     "destination": "NLRTM",
     "vessel": "MAERSK TEST",
-    "plannedDeparture": "2026-09-10",
-    "plannedArrival": "2026-10-15"
+    "plannedDeparture": "2026-09-10T08:00:00Z",
+    "plannedArrival": "2026-10-15T00:00:00Z"
+  },
+  {
+    "bookingNo": "BK1002",
+    "containerNos": [
+      "MSKU7654321"
+    ],
+    "origin": "SGSIN",
+    "destination": "USNYC",
+    "vessel": "MAERSK TEST II",
+    "plannedDeparture": "2026-09-12T06:00:00Z",
+    "plannedArrival": "2026-10-20T00:00:00Z"
   }
 ]

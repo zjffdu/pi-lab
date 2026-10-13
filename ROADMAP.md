@@ -391,7 +391,7 @@ Queue a follow-up message during the same run. Observe that it waits until the a
 
 #### Experiment D — Parallel tools
 
-Request container events and port status in one assistant message. Tool end events may follow completion order, while transcript tool-result messages remain in the assistant's source order.
+Request the per-container events (a booking can have several containers) and port status in one assistant message. Tool end events may follow completion order, while transcript tool-result messages remain in the assistant's source order.
 
 ### Explicitly excluded
 

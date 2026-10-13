@@ -1,0 +1,15 @@
+{
+  "id": "dev-double-approve",
+  "split": "dev",
+  "scenario": "double-approve",
+  "description": "The same approver confirms an action twice; only one executable business action may be admitted.",
+  "tenantId": "tenant-a",
+  "subject": "dave",
+  "bookingNo": "BK1001",
+  "approver": "bob",
+  "expected": {
+    "outcome": "executed",
+    "reachedStages": ["request", "approval", "connector", "delivery"],
+    "invariants": ["single-effect-per-idempotency-key"]
+  }
+}

@@ -1,0 +1,5 @@
+# Local evidence written by experiments (sessions, audit log, evidence manifests). Evidence of one
+# learner's run, not fixtures — never hand-edit, never commit.
+session-data/
+runtime-data/
+runtime-evidence/

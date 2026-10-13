@@ -1,0 +1,7 @@
+node_modules/
+.env
+dist/
+
+# Traces, evaluation reports, release-gate manifests, and demo output for one learner's run.
+# Treat this as runtime evidence, not source — never hand-edit it, never commit it.
+runtime-evidence/

@@ -1,0 +1,14 @@
+{
+  "id": "held-restart-during-approval",
+  "split": "held-out",
+  "scenario": "restart-during-approval",
+  "description": "The service restarts while an approval is pending; the original action and its approval binding must remain valid and inspectable afterward.",
+  "tenantId": "tenant-a",
+  "subject": "dave",
+  "bookingNo": "BK1001",
+  "expected": {
+    "outcome": "pending_approval",
+    "reachedStages": ["request", "policy", "tool", "approval"],
+    "invariants": ["zero-effects-while-pending"]
+  }
+}

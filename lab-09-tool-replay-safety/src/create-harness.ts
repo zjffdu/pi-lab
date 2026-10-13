@@ -1,30 +1,39 @@
-import {
-  AgentHarness,
-  type AgentLane,
-  type Context,
-  type OpenOperation,
-  type Session,
-} from "@earendil-works/pi-agent-core";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fileURLToPath } from "node:url";
+
+import type { Context } from "@earendil-works/chord";
+import type { Models } from "@earendil-works/pi-ai";
+import {
+  type Conversation,
+  createRegistry,
+  defineExtension,
+  Harness,
+  type HarnessInspection,
+  section,
+  type Storage,
+} from "@earendil-works/pi-durable";
 
 import { AttemptLog } from "./attempt-log.js";
 import { BookingRepository } from "./booking-repository.js";
 import { ContainerEventRepository } from "./container-event-repository.js";
-import { createGetContainerEventsSafeTool } from "./get-container-events-safe-tool.js";
+import {
+  createGetContainerEventsSafeTool,
+  type GetContainerEventsSafeToolOptions,
+} from "./get-container-events-safe-tool.js";
 import { OutboxRepository } from "./outbox-repository.js";
-import { createRequestBookingHoldTool } from "./request-booking-hold-tool.js";
+import { createRequestBookingHoldTool, type RequestBookingHoldToolOptions } from "./request-booking-hold-tool.js";
 
-const SYSTEM_PROMPT = `You are a booking-operations assistant in a learning lab.
+export const SYSTEM_PROMPT = `You are a booking-operations assistant in a learning lab.
 
 Rules:
 - Call get_container_events before making any claim about a container's movement history.
   It is read-only and intentionally slow; if the process ever restarts mid-call, recovery
   may safely re-run it, and that is expected, not an error.
-- Call request_booking_hold only when the user explicitly asks you to place an operational
-  hold on one specific booking number, and only after you have a clear reason for the hold.
-  It is state-changing. If the process ever restarts mid-call, do not call it again for the
-  same request — say plainly that the outcome is unknown instead of guessing or retrying.
+- When the user explicitly asks you to place an operational hold on one specific booking
+  number and gives a reason, call request_booking_hold with that booking number and that
+  reason right away; the user's stated reason is enough, and you do not need any other
+  lookup first. It is state-changing. If the process ever restarts mid-call, do not call it
+  again for the same request: say plainly that the outcome is unknown instead of guessing
+  or retrying.
 - Use only facts returned by a tool or already established earlier in this same durable
   session. The session may span multiple processes; treat anything already in the
   transcript as established, whether or not you personally produced it.
@@ -42,8 +51,25 @@ export function modelSelectionFromEnvironment(
 ): ModelSelection {
   return {
     provider: environment.PI_PROVIDER?.trim() || "deepseek",
-    modelId: environment.PI_MODEL?.trim() || "deepseek-v4-flash",
+    modelId: environment.PI_MODEL?.trim() || "deepseek-flash",
   };
+}
+
+/** Fails at startup with the catalog's real ids, instead of failing inside the first model request. */
+export function assertModelAvailable(models: Models, selection: ModelSelection): void {
+  if (models.getModel(selection.provider, selection.modelId)) {
+    return;
+  }
+
+  const available = models
+    .getModels(selection.provider)
+    .map((candidate) => candidate.id)
+    .slice(0, 12)
+    .join(", ");
+  throw new Error(
+    `Unknown model ${selection.provider}/${selection.modelId}. ` +
+      `Available model ids include: ${available || "none"}`,
+  );
 }
 
 function delayMsFromEnvironment(environment: NodeJS.ProcessEnv, key: string, fallback: number): number {
@@ -52,14 +78,12 @@ function delayMsFromEnvironment(environment: NodeJS.ProcessEnv, key: string, fal
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-/** Default artificial delay for the safe `get_container_events` tool. Overridable so the
- * replay-safety demo script can dial it however long it needs without touching source. */
+/** Default artificial delay for the safe `get_container_events` tool; the demo dials it via the environment. */
 export function safeToolDelayMsFromEnvironment(environment: NodeJS.ProcessEnv = process.env): number {
   return delayMsFromEnvironment(environment, "SAFE_TOOL_DELAY_MS", 8000);
 }
 
-/** Default artificial post-effect delay for `request_booking_hold`, after its outbox
- * append is already durable. */
+/** Default artificial post-effect delay for `request_booking_hold`, after its outbox append is already durable. */
 export function holdToolDelayMsFromEnvironment(environment: NodeJS.ProcessEnv = process.env): number {
   return delayMsFromEnvironment(environment, "HOLD_TOOL_DELAY_MS", 8000);
 }
@@ -74,82 +98,83 @@ export function outboxPathFromEnvironment(environment: NodeJS.ProcessEnv = proce
   return environment.OUTBOX_PATH?.trim() || `${DEFAULT_EVIDENCE_ROOT}/outbox.jsonl`;
 }
 
-export interface OpenMainLaneResult {
-  harness: AgentHarness;
-  lane: AgentLane;
-  /** Lanes with a durable operation left open when the harness attached to this session. */
-  open: OpenOperation[];
-}
-
-export interface OpenMainLaneOptions {
-  selection?: ModelSelection;
-  safeToolDelayMs?: number;
-  holdToolDelayMs?: number;
-  attemptLogPath?: string;
-  outboxPath?: string;
-  onSafeToolDispatch?: (toolCallId: string, containerNo: string) => void;
-  onHoldToolDispatch?: (toolCallId: string, bookingNo: string) => void;
-  onHoldEffectAppended?: (toolCallId: string, bookingNo: string, holdId: string) => void;
+export interface ReplayRegistryOptions {
+  bookings?: BookingRepository;
+  containerEvents?: ContainerEventRepository;
+  attemptLog?: AttemptLog;
+  outbox?: OutboxRepository;
+  safeTool?: Partial<GetContainerEventsSafeToolOptions>;
+  holdTool?: Partial<RequestBookingHoldToolOptions>;
 }
 
 /**
- * Same attach contract as Lab 07/08's `openMainLane`: `AgentHarness.create()` restores
- * every lane already recorded in the session (branch tip, lane configuration, and any
- * in-flight operation) before returning. Lab 09 registers Lab 08's fast `get_booking`
- * tool's read-only sibling (`get_container_events`, now declared `replay: "safe"`) next to
- * one brand-new state-changing tool (`request_booking_hold`, declared `replay: "never"`)
- * so the same crash-recovery mechanics can be directly contrasted between the two
- * policies.
+ * Tools and system-prompt sections reach the harness through a registry of named extensions that
+ * this process owns. Nothing in the registry is stored: the process that reopens a crashed session
+ * installs the same tools again, and the harness finds the interrupted call's tool by name. The
+ * tool's `replay` declaration lives in that code, which is why it applies to a call a *previous*
+ * process started. Lab 09 installs two tools that differ in exactly that declaration:
+ * `get_container_events` (`"safe"`, read-only) and `request_booking_hold` (`"unsafe"`, appends to a
+ * local outbox).
  */
-export async function openMainLane(
-  session: Session,
-  context: Context,
-  options: OpenMainLaneOptions = {},
-): Promise<OpenMainLaneResult> {
-  const selection = options.selection ?? modelSelectionFromEnvironment();
-  const models = builtinModels();
-  const model = models.getModel(selection.provider, selection.modelId);
+export function createReplayRegistry(options: ReplayRegistryOptions = {}) {
+  const attemptLog = options.attemptLog ?? new AttemptLog(attemptLogPathFromEnvironment());
+  const outbox = options.outbox ?? new OutboxRepository(outboxPathFromEnvironment());
 
-  if (!model) {
-    const available = models
-      .getModels(selection.provider)
-      .map((candidate) => candidate.id)
-      .slice(0, 12)
-      .join(", ");
-    throw new Error(
-      `Unknown model ${selection.provider}/${selection.modelId}. ` +
-        `Available model ids include: ${available || "none"}`,
-    );
-  }
-
-  const bookingRepository = BookingRepository.fromDefaultFixture();
-  const containerEventRepository = ContainerEventRepository.fromDefaultFixture();
-  const attemptLog = new AttemptLog(options.attemptLogPath ?? attemptLogPathFromEnvironment());
-  const outbox = new OutboxRepository(options.outboxPath ?? outboxPathFromEnvironment());
-  const safeToolDelayMs = options.safeToolDelayMs ?? safeToolDelayMsFromEnvironment();
-  const holdToolDelayMs = options.holdToolDelayMs ?? holdToolDelayMsFromEnvironment();
-
-  const { harness, open } = await AgentHarness.create(
-    {
-      session,
-      models,
-      model,
+  const registry = createRegistry();
+  registry.install(
+    defineExtension({
+      name: "replay-safety",
       tools: [
-        createGetContainerEventsSafeTool(containerEventRepository, attemptLog, {
-          delayMs: safeToolDelayMs,
-          onDispatch: options.onSafeToolDispatch,
+        createGetContainerEventsSafeTool(options.containerEvents ?? ContainerEventRepository.fromDefaultFixture(), attemptLog, {
+          delayMs: options.safeTool?.delayMs ?? safeToolDelayMsFromEnvironment(),
+          onDispatch: options.safeTool?.onDispatch,
         }),
-        createRequestBookingHoldTool(bookingRepository, outbox, attemptLog, {
-          delayMs: holdToolDelayMs,
-          onDispatch: options.onHoldToolDispatch,
-          onEffectAppended: options.onHoldEffectAppended,
+        createRequestBookingHoldTool(options.bookings ?? BookingRepository.fromDefaultFixture(), outbox, attemptLog, {
+          delayMs: options.holdTool?.delayMs ?? holdToolDelayMsFromEnvironment(),
+          onDispatch: options.holdTool?.onDispatch,
+          onEffectAppended: options.holdTool?.onEffectAppended,
+          replay: options.holdTool?.replay,
         }),
       ],
-      systemPrompt: SYSTEM_PROMPT,
-    },
+      sections: [section("preamble", () => SYSTEM_PROMPT, { tag: false })],
+    }),
+  );
+  return registry;
+}
+
+export interface OpenedConversation {
+  harness: Harness;
+  root: Conversation;
+  /**
+   * Unfinished tasks and unsettled submissions found when the harness attached. `inspect()` writes
+   * nothing and runs no task code, so it is a safe look at what the previous process left behind.
+   * Lab 07 never left anything behind; after a killed process this is non-empty (Lab 08).
+   */
+  inspection: HarnessInspection;
+}
+
+/**
+ * Attaches a fresh `Harness` to an already-open storage and returns its root conversation.
+ * `Harness.open()` and `root()` rebuild all runtime state from what the storage holds; the
+ * storage, not the harness, is what survives a restart. `root()` creates the conversation with
+ * the given model on first use and returns the stored one afterwards.
+ */
+export async function openRootConversation(
+  storage: Storage,
+  options: { models: Models; selection?: ModelSelection; registry?: ReturnType<typeof createReplayRegistry> },
+  context: Context,
+): Promise<OpenedConversation> {
+  const selection = options.selection ?? modelSelectionFromEnvironment();
+  assertModelAvailable(options.models, selection);
+
+  const harness = await Harness.open(
+    storage,
+    { models: options.models, registry: options.registry ?? createReplayRegistry() },
     context,
   );
-
-  const lane = await harness.lane("main", context);
-  return { harness, lane, open };
+  const inspection = await harness.inspect(context);
+  const root = await harness.root(context, {
+    agent: { model: { provider: selection.provider, modelId: selection.modelId } },
+  });
+  return { harness, root, inspection };
 }

@@ -1,144 +1,196 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { type Conversation, type HarnessInspection, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { describe, expect, it } from "vitest";
 
-import { AgentHarness } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-import { BACKGROUND_CONTEXT, createSessionRepo, openOrCreateSession } from "../src/session-store.js";
+import { createBookingRegistry, openRootConversation } from "../src/create-harness.js";
+import { BACKGROUND_CONTEXT, openSessionStorage } from "../src/session-store.js";
+import { listEntries } from "../src/transcript.js";
+import { createFauxModels, SpyBookingRepository, withTempSessionsRoot } from "./helpers.js";
 
 /**
- * These tests exercise the full Session -> AgentHarness -> lane stack from the roadmap's
- * mental model, entirely deterministically: `lane.appendMessage()` writes a durable
- * message entry directly, the same way a completed LLM turn would, without starting a
- * "run" operation or calling any model provider. That lets close/reopen, continuation,
- * and isolation all be proven with no network access and no live model credentials.
+ * These tests drive the real `Harness` over real JSONL storage with a scripted model. A "process"
+ * here is: open the storage, attach a brand-new Harness, do some work, close. Nothing is shared
+ * between two calls to `runProcess` except the files on disk, which is exactly what a restart
+ * leaves behind. No live model is called.
  */
 
-const CWD = "lab-07-harness-test-group";
+const ctx = BACKGROUND_CONTEXT;
 
-let sessionsRoot: string;
-let model: Model<Api>;
+interface Attached {
+  root: Conversation;
+  inspection: HarnessInspection;
+  created: boolean;
+}
 
-beforeEach(async () => {
-  sessionsRoot = await mkdtemp(join(tmpdir(), "pi-lab-07-harness-"));
-  const resolved = builtinModels().getModel("deepseek", "deepseek-v4-flash");
-  if (!resolved) {
-    throw new Error("deepseek/deepseek-v4-flash is missing from the builtin catalog");
+function toolCallThenAnswer(answer: string) {
+  return [
+    fauxAssistantMessage(fauxToolCall("get_booking", { bookingNo: "BK1001" }, { id: "call-1" }), {
+      stopReason: "toolUse",
+    }),
+    fauxAssistantMessage(answer),
+  ];
+}
+
+function setup() {
+  const { faux, models, selection } = createFauxModels();
+  const repository = new SpyBookingRepository();
+
+  async function runProcess<T>(sessionsRoot: string, sessionId: string, body: (attached: Attached) => Promise<T>) {
+    const { storage, created } = await openSessionStorage(sessionsRoot, sessionId, ctx);
+    const { harness, root, inspection } = await openRootConversation(
+      storage,
+      { models, selection, registry: createBookingRegistry(repository) },
+      ctx,
+    );
+    try {
+      return await body({ root, inspection, created });
+    } finally {
+      await harness.close(ctx);
+    }
   }
-  model = resolved;
-});
 
-afterEach(async () => {
-  await rm(sessionsRoot, { recursive: true, force: true });
-});
+  async function ask(root: Conversation, content: string) {
+    return (await root.submit({ type: "input", content }, ctx)).wait(ctx);
+  }
 
-describe("durable AgentHarness session", () => {
-  it("keeps a completed entry, its branch tip, and its chain across a close/reopen cycle", async () => {
-    const repo = createSessionRepo(sessionsRoot);
-    const models = builtinModels();
+  return { faux, repository, runProcess, ask };
+}
 
-    const { session: session1 } = await openOrCreateSession(repo, "conversation-a", CWD, BACKGROUND_CONTEXT);
-    const { harness: harness1, open: openOnFirstAttach } = await AgentHarness.create(
-      { session: session1, models, model, tools: [] },
-      BACKGROUND_CONTEXT,
-    );
-    expect(openOnFirstAttach).toEqual([]);
+describe("durable Harness session over JSONL storage", () => {
+  it("keeps the transcript across a close/reopen and answers a follow-up from it", () =>
+    withTempSessionsRoot(async (sessionsRoot) => {
+      const { faux, repository, runProcess, ask } = setup();
 
-    const lane1 = await harness1.lane("main", BACKGROUND_CONTEXT);
-    expect(await lane1.getTipId(BACKGROUND_CONTEXT)).toBeNull();
+      // ---- first process: a full tool-using turn, then a clean exit ----
+      faux.setResponses(toolCallThenAnswer("Booking BK1001 uses containers MSKU1234567 and MSKU7654321."));
+      const first = await runProcess(sessionsRoot, "conversation-a", async ({ root, inspection, created }) => {
+        expect(created).toBe(true);
+        expect(inspection.tasks).toEqual([]);
+        expect(inspection.submissions).toEqual([]);
 
-    const entryId1 = await lane1.appendMessage(
-      { role: "user", content: "What are the details for booking BK1001?", timestamp: Date.now() },
-      BACKGROUND_CONTEXT,
-    );
-    expect(await lane1.getTipId(BACKGROUND_CONTEXT)).toBe(entryId1);
+        const settled = await ask(root, "What are the details for booking BK1001?");
+        expect(settled.status).toBe("done");
+        return { rootId: root.id, settled, entries: await listEntries(root, ctx) };
+      });
 
-    // Close the harness (and, transitively, the session) the same way the CLI does at the
-    // end of one process's run.
-    await harness1.close(BACKGROUND_CONTEXT);
+      expect(first.entries.map((entry) => entry.kind)).toEqual([
+        "pi.user",
+        "pi.system",
+        "pi.assistant",
+        "pi.tool-result",
+        "pi.assistant",
+      ]);
+      expect(first.settled).toMatchObject({ answer: first.entries.at(-1)?.id });
 
-    // Reopen from scratch: a new Session handle from the repo, a brand-new AgentHarness
-    // instance, and a fresh call to acquire the "main" lane.
-    const { session: session2, created } = await openOrCreateSession(
-      repo,
-      "conversation-a",
-      CWD,
-      BACKGROUND_CONTEXT,
-    );
-    expect(created).toBe(false);
+      // ---- second process: same session id, nothing in memory carried over ----
+      let requestRoles: string[] = [];
+      let requestCarriesBothContainers = false;
+      faux.setResponses([
+        (context) => {
+          requestRoles = context.messages.map((message) => message.role);
+          const request = JSON.stringify(context.messages);
+          requestCarriesBothContainers = request.includes("MSKU1234567") && request.includes("MSKU7654321");
+          return fauxAssistantMessage("It uses MSKU1234567 and MSKU7654321.");
+        },
+      ]);
 
-    const { harness: harness2, open: openOnReopen } = await AgentHarness.create(
-      { session: session2, models, model, tools: [] },
-      BACKGROUND_CONTEXT,
-    );
-    // No operation was ever started (only a direct appendMessage), so nothing was left
-    // "in flight" for the harness to report as open on reattachment.
-    expect(openOnReopen).toEqual([]);
+      await runProcess(sessionsRoot, "conversation-a", async ({ root, inspection, created }) => {
+        expect(created).toBe(false);
+        expect(root.id).toBe(first.rootId);
+        expect(root.id).toBe(ROOT_CONVERSATION_ID);
+        // Nothing was left half-done by the previous process, so there is nothing to resume.
+        expect(inspection.scheduling).toBe("paused");
+        expect(inspection.tasks).toEqual([]);
+        expect(inspection.submissions).toEqual([]);
 
-    const lane2 = await harness2.lane("main", BACKGROUND_CONTEXT);
+        // Reopening reads the same committed records back, record for record.
+        expect(await listEntries(root, ctx)).toEqual(first.entries);
 
-    // The branch tip survived the restart untouched.
-    expect(await lane2.getTipId(BACKGROUND_CONTEXT)).toBe(entryId1);
+        const settled = await ask(root, "Which container is it using?");
+        expect(settled.status).toBe("done");
 
-    const entriesAfterReopen = await lane2.findEntries(undefined, BACKGROUND_CONTEXT);
-    expect(entriesAfterReopen).toHaveLength(1);
-    expect(entriesAfterReopen[0]?.id).toBe(entryId1);
+        const after = await listEntries(root, ctx);
+        expect(after).toHaveLength(first.entries.length + 2);
+        expect(after.slice(0, first.entries.length)).toEqual(first.entries);
+        expect(after.slice(first.entries.length).map((entry) => entry.kind)).toEqual(["pi.user", "pi.assistant"]);
+        expect(new Set(after.map((entry) => entry.id)).size).toBe(after.length);
+      });
 
-    // Continuing the session appends onto the restored tip, not a fresh root.
-    const entryId2 = await lane2.appendMessage(
-      { role: "user", content: "Which container is it using?", timestamp: Date.now() },
-      BACKGROUND_CONTEXT,
-    );
-    expect(entryId2).not.toBe(entryId1);
+      // The model's second request carried the first process's tool result, with both containers of
+      // the booking, so the follow-up was answered from durable history rather than by calling the
+      // tool again.
+      expect(requestRoles).toEqual(["system", "user", "assistant", "toolResult", "assistant", "user"]);
+      expect(requestCarriesBothContainers).toBe(true);
+      expect(repository.lookups).toEqual(["BK1001"]);
+      expect(faux.state.callCount).toBe(3);
+    }));
 
-    const entriesAfterContinuation = await lane2.findEntries(undefined, BACKGROUND_CONTEXT);
-    expect(entriesAfterContinuation).toHaveLength(2);
-    const second = entriesAfterContinuation.find((entry) => entry.id === entryId2);
-    expect(second?.parentId).toBe(entryId1);
+  it("keeps a different session id isolated from another session's transcript", () =>
+    withTempSessionsRoot(async (sessionsRoot) => {
+      const { faux, repository, runProcess, ask } = setup();
 
-    // Reopening never duplicated the first entry.
-    const firstOccurrences = entriesAfterContinuation.filter((entry) => entry.id === entryId1);
-    expect(firstOccurrences).toHaveLength(1);
+      faux.setResponses(toolCallThenAnswer("Booking BK1001 uses containers MSKU1234567 and MSKU7654321."));
+      await runProcess(sessionsRoot, "conversation-a", ({ root }) => ask(root, "What are the details for booking BK1001?"));
 
-    await harness2.close(BACKGROUND_CONTEXT);
-  });
+      let requestRoles: string[] = [];
+      let requestMentionsAnyContainer = true;
+      faux.setResponses([
+        (context) => {
+          requestRoles = context.messages.map((message) => message.role);
+          const request = JSON.stringify(context.messages);
+          requestMentionsAnyContainer = request.includes("MSKU1234567") || request.includes("MSKU7654321");
+          return fauxAssistantMessage("Which booking do you mean?");
+        },
+      ]);
 
-  it("keeps a different session id fully isolated from another session's entries", async () => {
-    const repo = createSessionRepo(sessionsRoot);
-    const models = builtinModels();
+      await runProcess(sessionsRoot, "conversation-b", async ({ root, inspection, created }) => {
+        expect(created).toBe(true);
+        expect(inspection.tasks).toEqual([]);
+        expect(await listEntries(root, ctx)).toEqual([]);
 
-    const { session: sessionA } = await openOrCreateSession(repo, "conversation-a", CWD, BACKGROUND_CONTEXT);
-    const { harness: harnessA } = await AgentHarness.create(
-      { session: sessionA, models, model, tools: [] },
-      BACKGROUND_CONTEXT,
-    );
-    const laneA = await harnessA.lane("main", BACKGROUND_CONTEXT);
-    await laneA.appendMessage(
-      { role: "user", content: "What are the details for booking BK1001?", timestamp: Date.now() },
-      BACKGROUND_CONTEXT,
-    );
-    await harnessA.close(BACKGROUND_CONTEXT);
+        const settled = await ask(root, "Which container is it using?");
+        expect(settled.status).toBe("done");
+        expect((await listEntries(root, ctx)).map((entry) => entry.kind)).toEqual([
+          "pi.user",
+          "pi.system",
+          "pi.assistant",
+        ]);
+      });
 
-    const { session: sessionB, created } = await openOrCreateSession(
-      repo,
-      "conversation-b",
-      CWD,
-      BACKGROUND_CONTEXT,
-    );
-    expect(created).toBe(true);
+      expect(requestRoles).toEqual(["system", "user"]);
+      expect(requestMentionsAnyContainer).toBe(false);
+      expect(repository.lookups).toEqual(["BK1001"]);
+    }));
 
-    const { harness: harnessB } = await AgentHarness.create(
-      { session: sessionB, models, model, tools: [] },
-      BACKGROUND_CONTEXT,
-    );
-    const laneB = await harnessB.lane("main", BACKGROUND_CONTEXT);
+  // `root()` applies its `agent` choices only when it creates the conversation. A later process that
+  // starts with a different PI_MODEL still runs the session on the model stored at creation.
+  it("keeps the model chosen at creation when the session is reopened with a different selection", () =>
+    withTempSessionsRoot(async (sessionsRoot) => {
+      const { models, selection: modelA } = createFauxModels(["model-A", "model-B"]);
+      const modelB = { ...modelA, modelId: "model-B" };
 
-    expect(await laneB.getTipId(BACKGROUND_CONTEXT)).toBeNull();
-    expect(await laneB.findEntries(undefined, BACKGROUND_CONTEXT)).toEqual([]);
+      async function storedModel(selection: typeof modelA): Promise<string | undefined> {
+        const { storage } = await openSessionStorage(sessionsRoot, "conversation-a", ctx);
+        const { harness, root } = await openRootConversation(storage, { models, selection }, ctx);
+        try {
+          return (await root.agent(ctx)).model?.modelId;
+        } finally {
+          await harness.close(ctx);
+        }
+      }
 
-    await harnessB.close(BACKGROUND_CONTEXT);
-  });
+      expect(await storedModel(modelA)).toBe("model-A");
+      expect(await storedModel(modelB)).toBe("model-A");
+    }));
+
+  it("records a provider failure as an unanswered submission instead of throwing", () =>
+    withTempSessionsRoot(async (sessionsRoot) => {
+      const { faux, runProcess, ask } = setup();
+      faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "401 invalid api key" })]);
+
+      await runProcess(sessionsRoot, "conversation-a", async ({ root }) => {
+        const settled = await ask(root, "What are the details for booking BK1001?");
+        expect(settled).toMatchObject({ status: "unanswered", reason: "model_error", detail: "401 invalid api key" });
+      });
+    }));
 });

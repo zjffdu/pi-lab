@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 
 export interface Booking {
   bookingNo: string;
-  containerNo: string;
+  /** A booking can carry several containers; at least one. */
+  containerNos: string[];
   origin: string;
   destination: string;
   vessel: string;
@@ -13,23 +14,24 @@ export interface Booking {
   customsHoldReason?: string;
 }
 
-function isBooking(value: unknown): value is Booking {
+export function isBooking(value: unknown): value is Booking {
   if (typeof value !== "object" || value === null) {
     return false;
   }
 
   const candidate = value as Record<string, unknown>;
-  const requiredFieldsOk = [
-    "bookingNo",
-    "containerNo",
-    "origin",
-    "destination",
-    "vessel",
-    "plannedDeparture",
-    "plannedArrival",
-  ].every((field) => typeof candidate[field] === "string");
+  const hasContainers =
+    Array.isArray(candidate.containerNos) &&
+    candidate.containerNos.length > 0 &&
+    candidate.containerNos.every((containerNo) => typeof containerNo === "string" && containerNo !== "");
 
-  return requiredFieldsOk && (candidate.customsHoldReason === undefined || typeof candidate.customsHoldReason === "string");
+  return (
+    hasContainers &&
+    ["bookingNo", "origin", "destination", "vessel", "plannedDeparture", "plannedArrival"].every(
+      (field) => typeof candidate[field] === "string",
+    ) &&
+    (candidate.customsHoldReason === undefined || typeof candidate.customsHoldReason === "string")
+  );
 }
 
 export class BookingRepository {
@@ -44,6 +46,10 @@ export class BookingRepository {
     }
 
     return new BookingRepository(parsed);
+  }
+
+  public all(): readonly Booking[] {
+    return this.bookings;
   }
 
   public findByBookingNo(bookingNo: string): Booking | undefined {

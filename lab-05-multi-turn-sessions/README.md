@@ -1,217 +1,145 @@
 # Lab 05 — Multi-turn In-memory Sessions
 
-Give the Lab 01 agent loop a conversation identity. Instead of building one agent per
-message, a `Map<conversationId, Agent>` registry decides whether to reuse an existing
-in-memory transcript or start a new one — and shows exactly what a process restart erases.
+English | [中文](README.zh-CN.md)
 
-## Learning objective
+**Question:** how does a conversation id pick the right transcript for the next message?
+**Answer this lab shows:** your code does, not Pi. Pi's `Agent` holds exactly one transcript and knows nothing
+about conversation ids, so you keep a `Map<conversationId, Agent>` and look the agent up before every prompt:
 
-By the end of this lab, you can explain this from your own console output:
+- **Same id → same agent → same transcript.** The follow-up sees everything said before, including the tool result.
+- **Different id → different agent.** It starts empty and sees nothing of the other conversation.
+- **Restart → empty map.** The transcripts lived only in that process's memory, so even the same id starts over.
+
+Think of one notebook per customer, kept in a drawer that is emptied every time the office closes.
+
+## A concrete scenario
+
+You run a booking assistant in a chat tool. Two colleagues talk to it at the same time, each in their own chat:
+
+| Time | Chat | Message | What should happen |
+| --- | --- | --- | --- |
+| 10:00 | Chat A | "What are the details for booking BK1001?" | The assistant looks the booking up and answers. |
+| 10:01 | Chat A | "Which container is it using?" | "it" means BK1001. It answers from the earlier lookup, with no new lookup. |
+| 10:02 | Chat B | "Which container is it using?" | Chat B never mentioned a booking. It must ask which one, not borrow Chat A's. |
+| 10:30 | server restarts | | Both notebooks are gone. |
+| 10:31 | Chat A | "Which container is it using?" | Same chat id, but the assistant has lost BK1001. It must ask again, not guess. |
+
+**Without a registry**, a new agent per message (Lab 03) makes the 10:01 follow-up fail: the second agent has never
+heard of BK1001. **With one shared agent for everybody**, Chat B at 10:02 would answer with Chat A's containers.
+Neither is acceptable, so something has to map "which chat is this" to "which transcript".
+
+Who needs to understand this? **You, the developer.** The two colleagues just see an assistant that remembers, or
+doesn't. The lab shows where the memory lives, who owns the lookup, and what a restart takes with it.
+
+| In the scenario | In the lab |
+| --- | --- |
+| a chat | a conversation id (`conversation-a`, `conversation-b`) |
+| the notebook | one `Agent` and its `agent.state.messages` |
+| the drawer | `SessionRegistry`, a `Map` in `src/session-registry.ts` |
+| the office closing | the process exiting; a new `npm run agent` starts with an empty map |
+
+## The idea
 
 ```text
-conversation-a -> Agent A -> transcript A
-conversation-b -> Agent B -> transcript B
+conversation-a ─┐                       ┌─ Agent A ── transcript A: system, user, assistant, toolResult, assistant, user, assistant
+                ├─ registry.getOrCreate ┤
+conversation-b ─┘                       └─ Agent B ── transcript B: system, user, assistant
 ```
 
-The same conversation id always resolves to the same `Agent` instance for the life of the
-process. A different conversation id gets its own instance with no visibility into the
-first one's transcript. There is no database or file behind any of this — it is a plain
-`Map` living in one process's heap.
+Three things to take away:
 
-This lab builds directly on [Lab 01](../lab-01-pi-agent-loop/README.md)'s agent loop and
-uses the same single `get_booking` tool and fixture. It does not add Teams transport (see
-[Lab 03](../lab-03-teams-pi/README.md)), more tools (see
-[Lab 04](../lab-04-multi-tool-investigation/README.md)), or durable persistence — see
-[Lab 06](../ROADMAP.md) and the roadmap's "After Lab 06" section for those.
+1. **The registry is application code.** `pi-agent-core` exports `Agent`, the loop, and types; `Agent.sessionId` is
+   only a string passed to the provider for caching. Nothing in Pi maps an id to an agent.
+2. **History is just the agent's message array.** Every prompt sends the whole array to the model. A follow-up works
+   because the earlier tool result is still in it; a new conversation works because its array is new.
+3. **Nothing is durable.** No file, no database. A restart empties the map, and the trace says so (`created`, not
+   `reused`) instead of hiding it.
 
-## Prerequisites
+Not covered: persistence across restarts, concurrent messages in one conversation (Lab 06), real chat transports
+(Lab 03), authorization (who may open which conversation).
 
-- Node.js 24.5 or newer
-- npm
-- Credentials for a model provider supported by `@earendil-works/pi-ai`
+## The experiment
 
-The default configuration uses DeepSeek Flash through the official DeepSeek API, same as Lab 01.
-The CLI starts Node with `--use-env-proxy`, so the DeepSeek client honors
-`HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.
+The CLI is an in-process harness: it runs a list of `(conversationId, message)` turns against one registry. Predict
+first: what can the second message see, what can the other chat see, what survives a restart?
 
-## 1. Predict before running
+1. `npm run agent` runs the three turns of the table above (Chat A twice, then Chat B) in one process.
+2. Run only the follow-up in a **new** process with the id `conversation-a`: that is the restart.
 
-Write down your answers before starting the agent:
+## What we measured
 
-1. What can the second user message in the same conversation see that a brand-new
-   conversation cannot?
-2. What can a different conversation id see of the first conversation's history?
-3. What happens to all of this if the process restarts between messages?
+From live runs against `deepseek-flash` (wording varies by model; the registry and tool columns are what the trace showed):
 
-Do not inspect the expected trace yet.
+| turn | conversation | registry | `get_booking` called | what the answer did |
+| --- | --- | --- | --- | --- |
+| 1 | `conversation-a` | `created`, size 1 | yes, once | listed BK1001's two containers |
+| 2 | `conversation-a` | `reused`, size 1 | no | "uses two containers: MSKU1234567 and MSKU7654321" |
+| 3 | `conversation-b` | `created`, size 2 | no | asked which booking number |
+| restart | `conversation-a` | `created`, size 1 | no | asked which booking number |
 
-## 2. Install dependencies
+- **The turn counter is the proof of reuse.** `conversation-a`'s follow-up is `turn #3`; `conversation-b` and the
+  restarted `conversation-a` both start at `turn #1`. The counter lives in the logger subscribed to that agent.
+- **The follow-up needed no tool call** because the tool result was already in the transcript.
+- **No answer invented a container.** The system prompt tells the model to ask when nothing has been established;
+  that is a prompt behavior, so it can vary with the model.
+
+The offline tests pin what a live run cannot show reliably (they drive the real `Agent` with a scripted stream):
+
+- the follow-up's model call carries `system, user, assistant, toolResult, assistant, user`;
+- the other conversation's first call carries only `system, user`;
+- after `registry.reset()` the same id starts with `system, user` again.
+
+## Run it
 
 ```bash
 cd lab-05-multi-turn-sessions
 npm install
-cp .env.example .env   # then fill in DEEPSEEK_API_KEY
+cp .env.example .env     # then fill in DEEPSEEK_API_KEY
+npm run check            # typecheck + 23 offline tests, no model calls
+npm run agent            # the three-turn scenario above
 ```
 
-The Pi dependencies are pinned to `1.1.0` so later SDK changes do not silently alter this lab. Pi `1.1.0` catalogs the model as `deepseek-flash`; leave `PI_MODEL` unset or set it to `deepseek-flash` in `.env`. `npm run check` fails if the default model id stops resolving in the pinned catalog.
-
-## 3. Verify the deterministic parts
+Try it by hand:
 
 ```bash
-npm run check
+npm run agent -- --conversation try "What are the details for booking BK1001?" --conversation try "How many containers does it have?"
+npm run agent -- --conversation try "How many containers does it have?"   # new process: created, turn #1
 ```
 
-This covers the booking repository and tool (same as Lab 01), plus the session registry
-(reuse, isolation, reset) and the conversation-tagged trace logger. They also drive the real Pi
-`Agent` through the registry with a scripted stream function, so the transcript a follow-up sees,
-the isolation of another conversation, and the fresh transcript after a reset are checked against
-Pi `1.1.0` itself — no network calls.
+Reading the trace: every line is tagged `[conversation-id]`. `assistant (tool call) ... call=<id>` is the model's
+*request*; the `tool_start`/`tool_end` pair is Pi running it, and the `call=` id pairs them. Each `prompt()` opens its
+own `▶ agent` ... `◀ agent_end` bracket, so one conversation shows several brackets.
 
-## 4. Run the default live scenario
+## Test yourself
 
-```bash
-npm run agent
-```
+Answer the first three before running the scenario:
 
-This runs three turns in one process, driven by an in-process CLI harness (no Teams or
-HTTP transport in this lab — see [Lab 03](../lab-03-teams-pi/README.md) for that):
+1. What can the second message in a conversation see that a brand-new conversation cannot?
+2. What does a different conversation id see of the first one's history?
+3. What survives a restart?
+4. Which log line proves the follow-up reused the same agent?
+5. Why does `conversation-b` start at `turn #1` even though it ran later?
+6. The system message is in every transcript but never in the trace. Why?
+7. If two chats shared one agent, which of the three outcomes in the table would break?
+
+## Good to know
+
+- **Pins:** `pi-agent-core` and `pi-ai` `1.1.0`. Default model `deepseek-flash`; a model id that is not in the pinned
+  catalog fails at startup, and a test checks the default resolves.
+- The system message carries the prompt and tool declarations. It is part of `agent.state.messages` and of every
+  model call, but emits no `message_*` event, so the trace never shows it.
+- `pi-durable` has conversations that survive restarts, with its own ids. From its README I could not find a lookup
+  by an external chat id, so a real service would still keep this mapping; this was read, not run.
+- Provider/connection problems: see [Lab 01](../lab-01-pi-agent-loop/README.md). `Unknown model` means `.env` sets a
+  model id outside the catalog; keep `PI_MODEL=deepseek-flash`.
+
+## Where things are
 
 ```text
-1. conversation-a: "What are the details for booking BK1001?"
-2. conversation-a: "Which container is it using?"          (follow-up, same conversation)
-3. conversation-b: "Which container is it using?"           (same question, new conversation)
+src/session-registry.ts       Map<conversationId, Agent>: getOrCreate, has, size, reset
+src/session-trace-logger.ts   agent/turn/tool tree tagged with the conversation id; turn counter per agent
+src/create-agent.ts           model selection, system prompt, Agent; optional scripted streamFn
+src/cli.ts                    runs (conversationId, message) turns against one registry
+src/booking-repository.ts, get-booking-tool.ts   fixture lookup (a booking has one or more containers)
+tests/session-agent-loop.test.ts   the core offline proof: reuse, isolation, reset against the real Agent
 ```
-
-You can also drive your own scenario:
-
-```bash
-npm run agent -- --conversation conversation-a "What are the details for booking BK1001?" --conversation conversation-a "Which container is it using?"
-```
-
-## 5. Happy path
-
-`src/session-trace-logger.ts` renders the same indented agent/turn/tool tree as Lab 01's
-logger, with every line still tagged `[conversationId]` — unlike later labs that drop that
-tag, here it is load-bearing: it is what lets you tell, at a glance, that `turn #3` below
-belongs to the *same* `conversation-a` as `turn #1`/`#2`, even though it opens a brand-new
-`▶ agent`/`◀ agent_end` bracket (one per `prompt()` call, not one per agent lifetime).
-
-Actual terminal trace from one recorded live run (call id and the final answer elided; exact wording varies by model):
-
-```text
-[Setup] model=deepseek/deepseek-flash
-[Session] conversation=conversation-a created registry_size=1
-[User][conversation-a] What are the details for booking BK1001?
-[conversation-a] ▶ agent
-[conversation-a]   ▶ turn #1
-[conversation-a]     user       "What are the details for booking BK1001?"
-[conversation-a]     [Assistant] I'll look that up.
-[conversation-a]     assistant (tool call) get_booking call=call_00_WFyC... args={"bookingNo":"BK1001"}
-[conversation-a]     ▶ tool_start get_booking call=call_00_WFyC... args={"bookingNo":"BK1001"}
-[conversation-a]     ◀ tool_end get_booking status=success
-[conversation-a]     toolResult get_booking status=success
-[conversation-a]   ◀ turn_end #1 tool_results=1
-[conversation-a]   ▶ turn #2
-[conversation-a]     [Assistant] Booking BK1001 details:
-- **Containers:** MSKU1234567, MSKU7654321
-...
-[conversation-a]   ◀ turn_end #2 tool_results=0
-[conversation-a] ◀ agent_end
-[Session] conversation=conversation-a reused registry_size=1
-[User][conversation-a] Which container is it using?
-[conversation-a] ▶ agent
-[conversation-a]   ▶ turn #3
-[conversation-a]     user       "Which container is it using?"
-[conversation-a]     [Assistant] Booking BK1001 uses two containers: **MSKU1234567** and **MSKU7654321**.
-[conversation-a]   ◀ turn_end #3 tool_results=0
-[conversation-a] ◀ agent_end
-[Session] conversation=conversation-b created registry_size=2
-[User][conversation-b] Which container is it using?
-[conversation-b] ▶ agent
-[conversation-b]   ▶ turn #1
-[conversation-b]     user       "Which container is it using?"
-[conversation-b]     [Assistant] Which booking number are you referring to? I don't have a booking established in this conversation yet.
-[conversation-b]   ◀ turn_end #1 tool_results=0
-[conversation-b] ◀ agent_end
-```
-
-An `assistant (tool call) <name> call=<id> args=<json>` line is the model's *request*, with the arguments it chose; the `tool_start`/`tool_end` pair is Pi actually executing that call, and the `call=` id pairs the two. Whether turn #1 also prints an `[Assistant]` preamble line before it depends on the model.
-
-Notice three things:
-
-- The second `conversation-a` turn answers correctly **without calling `get_booking` again**
-  — both container numbers (a booking can have several) are already in that agent's transcript from turn 1.
-- `conversation-b`'s turn numbering restarts at `#1` and it has no idea what "it" refers to,
-  even though it is asked the exact same question as `conversation-a`'s follow-up.
-- Neither conversation's trace shows the `system` message at the head of its transcript, yet both
-  model calls carry it — see [The transcript versus the trace](#the-transcript-versus-the-trace).
-
-## 6. Inject a failure — process restart
-
-Run only the follow-up, alone, in a brand-new process, reusing the same conversation id
-`conversation-a` that already "knows" about BK1001 from step 4:
-
-```bash
-npm run agent -- --conversation conversation-a "Which container is it using?"
-```
-
-Recorded output (trimmed):
-
-```text
-[Session] conversation=conversation-a created registry_size=1
-[conversation-a]   ▶ turn #1
-[conversation-a]     [Assistant] I don't have a booking established yet in this conversation. Which booking number are you referring to?
-```
-
-`conversation-a` is **created**, not
-reused, because this is a new process with an empty registry. The agent has no memory of
-BK1001 and should ask which booking you mean instead of guessing container numbers.
-
-This is the core lesson: reusing the same conversation id string across a restart does not
-recover any state. The registry, and every transcript it held, lived only in the previous
-process's memory and is gone.
-
-## 7. Explain the trace
-
-Answer using your terminal output:
-
-1. Which log line proves that `conversation-a`'s second question reused the same agent
-   instead of creating a new one?
-2. Why does `conversation-b`'s turn counter start at `#1` even though it runs after
-   `conversation-a` in the same process?
-3. After the restart in step 6, what does the agent do instead of fabricating a container
-   number? What in the system prompt causes that behavior?
-
-## Completion criteria
-
-- `npm run check` passes (booking repository/tool tests plus session registry reuse,
-  isolation, and reset tests, plus the trace logger tests).
-- A same-conversation follow-up (`conversation-a`, turn 2) answers using the first turn's
-  tool result — all of BK1001's containers, since a booking can have several — without
-  re-calling `get_booking`.
-- A different conversation id (`conversation-b`) asked the identical follow-up cannot see
-  `conversation-a`'s transcript and does not fabricate an answer.
-- Restarting the process and reusing `conversation-a`'s id produces a fresh agent with no
-  memory of BK1001 — the loss of context is visible in the trace (`created`, not `reused`),
-  not silently hidden.
-- You can explain the difference between this lab's runtime message history (a `Map` in
-  process memory) and durable persistence (nothing here survives a restart).
-
-## The transcript versus the trace
-
-- **Each transcript starts with the system prompt.** `conversation-a`'s `agent.state.messages` is `system`, `user`, `assistant`, `toolResult`, `assistant`, then `user`, `assistant` after the follow-up; `conversation-b`'s is `system`, `user`, `assistant`. The system message carries the prompt and the tool declarations, and it is what the model receives on every call, together with the full history so far. It emits no `message_*` event, so it never appears in the trace tree. `tests/session-agent-loop.test.ts` asserts these role sequences offline.
-- **The trace shows events, not the whole transcript.** Each `message_end` and each `tool_execution_*` event is printed once, when it happens. The follow-up in `conversation-a` prints no `get_booking` lines because it needed no new tool call; its input is the transcript built during the first prompt.
-- **The turn counter and the `[conversation-a]` tag outlive one prompt.** Each `prompt()` opens its own `▶ agent` ... `◀ agent_end` bracket, but the logger is subscribed once per agent, so `turn #3` continues from `turn #2`. A restarted process starts a new agent and a new logger, so the counter restarts at `#1`.
-- **Provider failures end the run with an `error` message.** The run ends with an `assistant` message whose `stopReason` is `error`, and `agent.state.errorMessage` is set, which is what makes the CLI exit non-zero.
-
-## Troubleshooting
-
-### `Unknown model provider/model`
-
-Keep `PI_PROVIDER=deepseek` and `PI_MODEL=deepseek-flash` with the pinned Pi `1.1.0` dependencies.
-
-### `Provider is not configured: deepseek`
-
-Set `DEEPSEEK_API_KEY` in `.env`.
-
-For other connection issues, see [Lab 01](../lab-01-pi-agent-loop/README.md#troubleshooting) — they apply unchanged here.

@@ -1,5 +1,5 @@
-import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import { defineTool } from "@earendil-works/pi-durable";
 
 import type { BookingRepository } from "./booking-repository.js";
 
@@ -13,10 +13,6 @@ const getBookingParameters = Type.Object(
   { additionalProperties: false },
 );
 
-interface GetBookingDetails {
-  bookingNo: string;
-}
-
 export class BookingNotFoundError extends Error {
   public constructor(bookingNo: string) {
     super(`Booking not found: ${bookingNo}`);
@@ -25,32 +21,28 @@ export class BookingNotFoundError extends Error {
 }
 
 /**
- * Harness-native tool: `AgentHarnessTool`'s `execute` signature differs from the plain
- * `AgentTool` used by Lab 01/04/05/06's core `Agent` — it takes a progress callback, a
- * resolved tool context, and this call's durable `AgentHarnessToolInvocation` instead of
- * a bare `AbortSignal`. `TContext` is `undefined` here: this lab has no per-turn tool
- * context to resolve.
+ * A `pi-durable` tool is registered through `defineTool`, not built as a bare `AgentTool`:
+ * `execute(args, api, context)` receives validated, typed `args` and a per-call `api`
+ * (streamed output, diagnostics, document reads) instead of `(toolCallId, params, signal)`.
+ * Each call runs as its own durable task whose intent is committed before `execute()` runs.
  */
-export function createGetBookingTool(
-  repository: BookingRepository,
-): AgentHarnessTool<undefined, typeof getBookingParameters, GetBookingDetails> {
-  return {
+export function createGetBookingTool(repository: BookingRepository) {
+  return defineTool({
     name: "get_booking",
-    label: "Get booking",
     description:
       "Look up one booking by its exact booking number. Use this before making any claim about a booking.",
     parameters: getBookingParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params, _onUpdate, _toolContext, _invocation, _context) {
-      const booking = repository.findByBookingNo(params.bookingNo);
+    async execute(args) {
+      const booking = repository.findByBookingNo(args.bookingNo);
       if (!booking) {
-        throw new BookingNotFoundError(params.bookingNo);
+        throw new BookingNotFoundError(args.bookingNo);
       }
 
       return {
         content: [{ type: "text", text: JSON.stringify(booking) }],
-        details: { bookingNo: params.bookingNo },
+        details: { bookingNo: args.bookingNo },
       };
     },
-  };
+  });
 }

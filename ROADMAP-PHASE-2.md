@@ -82,8 +82,8 @@ one lab and see the complete experiment without resolving a hidden shared runtim
 | 10 | Context Compaction | Complete |
 | 11 | Session Tree | Complete |
 | 12 | Context Projection | Complete |
-| 13 | Tool Governance | Planned |
-| 14 | Telemetry and Evaluation | Planned |
+| 13 | Tool Governance | Complete |
+| 14 | Telemetry and Evaluation | Complete |
 
 Directory presence is not evidence of completion. A lab is complete only when its
 acceptance criteria have current evidence recorded in that lab's README.

@@ -2,30 +2,45 @@ import "dotenv/config";
 
 import { fileURLToPath } from "node:url";
 
-import type { CompactionResult, RunResult } from "@earendil-works/pi-agent-core";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import type { CompactionPolicy } from "@earendil-works/pi-durable";
 
-import { openMainLane } from "./create-harness.js";
-import { attachContextTokenHook, attachHarnessTraceLogger } from "./harness-trace-logger.js";
-import { BACKGROUND_CONTEXT, createSessionRepo, openOrCreateSession } from "./session-store.js";
-
-/** Fixed grouping key, same role as earlier labs' `SESSION_GROUP` — see `openOrCreateSession`. */
-const SESSION_GROUP = "lab-10-context-compaction";
+import {
+  compactConversation,
+  compactionEntries,
+  compactionSummaryText,
+  estimatedContextTokens,
+  keepRecentTokensForLastTurns,
+} from "./compaction.js";
+import { compactionPolicyFromEnvironment, modelSelectionFromEnvironment, openRootConversation } from "./create-harness.js";
+import { attachTraceLogger } from "./harness-trace-logger.js";
+import { BACKGROUND_CONTEXT, openSessionStorage } from "./session-store.js";
+import { describeEntry, listEntries } from "./transcript.js";
 
 const SESSIONS_ROOT = fileURLToPath(new URL("../session-data", import.meta.url));
 
+type Mode =
+  | { kind: "prompt"; prompt: string }
+  | { kind: "compact"; customInstructions: string | undefined; keepTurns: number | undefined }
+  | { kind: "inspect" };
+
 interface CliArgs {
   sessionId: string;
-  prompt: string | undefined;
-  compact: boolean;
-  customInstructions: string | undefined;
-  inspect: boolean;
+  mode: Mode;
 }
+
+const USAGE =
+  'Usage: npm run agent -- --session <id> --prompt "<text>"\n' +
+  '   or: npm run agent -- --session <id> --compact [--custom-instructions "<text>"] [--keep-turns <n>]\n' +
+  "   or: npm run agent -- --session <id> --inspect\n" +
+  "One CLI invocation is one turn, one compaction, or one read-only inspection.";
 
 function parseArgs(argv: string[]): CliArgs {
   let sessionId: string | undefined;
   let prompt: string | undefined;
   let compact = false;
   let customInstructions: string | undefined;
+  let keepTurns: number | undefined;
   let inspect = false;
 
   let index = 0;
@@ -43,132 +58,106 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (flag === "--custom-instructions") {
       customInstructions = argv[index + 1];
       index += 2;
+    } else if (flag === "--keep-turns") {
+      keepTurns = Number.parseInt(argv[index + 1] ?? "", 10);
+      index += 2;
     } else if (flag === "--inspect") {
       inspect = true;
       index += 1;
     } else {
-      throw new Error(`Unknown argument "${flag}".`);
+      throw new Error(`Unknown argument "${flag}".\n${USAGE}`);
     }
   }
 
   if (!sessionId) {
-    throw new Error(
-      'Usage: npm run agent -- --session <id> --prompt "<text>"\n' +
-        '   or: npm run agent -- --session <id> --compact [--custom-instructions "<text>"]\n' +
-        "   or: npm run agent -- --session <id> --inspect\n" +
-        "One CLI invocation is one turn, one compaction attempt, or one read-only inspection.",
-    );
+    throw new Error(USAGE);
   }
-  const modeCount = [Boolean(prompt), compact, inspect].filter(Boolean).length;
-  if (modeCount !== 1) {
-    throw new Error("Exactly one of --prompt, --compact, or --inspect is required.");
+  if ([Boolean(prompt), compact, inspect].filter(Boolean).length !== 1) {
+    throw new Error(`Exactly one of --prompt, --compact, or --inspect is required.\n${USAGE}`);
   }
-  if (customInstructions && !compact) {
-    throw new Error("--custom-instructions only applies to --compact.");
+  if ((customInstructions !== undefined || keepTurns !== undefined) && !compact) {
+    throw new Error("--custom-instructions and --keep-turns only apply to --compact.");
+  }
+  if (keepTurns !== undefined && !(Number.isSafeInteger(keepTurns) && keepTurns > 0)) {
+    throw new Error("--keep-turns must be a positive integer.");
   }
 
-  return { sessionId, prompt, compact, customInstructions, inspect };
-}
-
-function logRunResult(label: string, result: RunResult): boolean {
-  if (!result.ok) {
-    console.log(`[${label}] rejected: ${result.error._tag}: ${result.error.message}`);
-    return true;
+  if (prompt) {
+    return { sessionId, mode: { kind: "prompt", prompt } };
   }
-  if (result.value.status === "suspended") {
-    console.log(`[${label}] operationId=${result.value.operationId} status=suspended (deferred provider response)`);
-    return false;
-  }
-  const record = result.value;
-  console.log(
-    `[${label}] operationId=${record.operationId} kind=${record.kind} status=${record.status} ` +
-      `fromTip=${record.fromTipId ?? "null"} tip=${record.tipId ?? "null"}`,
-  );
-  if (record.status !== "completed" && record.error) {
-    console.error(`[Fatal] operation ${record.status}: ${record.error.code}: ${record.error.message}`);
-    return true;
-  }
-  return false;
-}
-
-function logCompactionResult(result: CompactionResult): boolean {
-  if (!result.ok) {
-    console.log(`[Compact] rejected: ${result.error._tag}: ${result.error.message}`);
-    return true;
-  }
-  const record = result.value.compaction;
-  console.log(
-    `[Compact] operationId=${record.operationId} kind=${record.kind} status=${record.status} ` +
-      `fromTip=${record.fromTipId ?? "null"} tip=${record.tipId ?? "null"}`,
-  );
-  if (record.status !== "completed" && record.error) {
-    console.error(`[Fatal] compaction ${record.status}: ${record.error.code}: ${record.error.message}`);
-    return true;
-  }
-  return false;
+  return { sessionId, mode: compact ? { kind: "compact", customInstructions, keepTurns } : { kind: "inspect" } };
 }
 
 async function main(): Promise<void> {
-  const { sessionId, prompt, compact, customInstructions, inspect } = parseArgs(process.argv.slice(2));
+  const { sessionId, mode } = parseArgs(process.argv.slice(2));
   const context = BACKGROUND_CONTEXT;
+  const models = builtinModels();
 
-  const repo = createSessionRepo(SESSIONS_ROOT);
-  const { session, created } = await openOrCreateSession(repo, sessionId, SESSION_GROUP, context);
+  const { storage, created, path } = await openSessionStorage(SESSIONS_ROOT, sessionId, context);
+  console.log(`[Session] id=${sessionId} ${created ? "created" : "reopened"} path=${path}`);
 
+  // The harness reads this object on every resolution, so --keep-turns can adjust it after the
+  // transcript has been read, without reopening the session.
+  const compaction: Partial<CompactionPolicy> = compactionPolicyFromEnvironment();
+  const { harness, root, inspection } = await openRootConversation(
+    storage,
+    { models, selection: modelSelectionFromEnvironment(), compaction },
+    context,
+  );
   console.log(
-    `[Session] id=${session.metadata.id} ${created ? "created" : "reopened"} path=${session.metadata.path}`,
+    `[Harness] unfinishedTasks=${inspection.tasks.length} unsettledSubmissions=${inspection.submissions.length}`,
   );
 
-  const { harness, lane, open } = await openMainLane(session, context);
-  console.log(`[Harness] lane=main openOperationsOnAttach=${open.length}`);
-
-  const tipBefore = await lane.getTipId(context);
-  const entriesBefore = await lane.findEntries(undefined, context);
-  console.log(`[Lane] tipId(before)=${tipBefore ?? "null"} entries(before)=${entriesBefore.length}`);
-  for (const entry of [...entriesBefore].sort((a, b) => a.seq - b.seq)) {
-    const detail = entry.type === "message" ? ` role=${entry.message.role}` : entry.type === "compaction" ? ` tokensBefore=${entry.tokensBefore} retainedTail=${entry.retainedTail.length}` : "";
-    console.log(
-      `[Entry][before] seq=${entry.seq} id=${entry.id} parent=${entry.parentId ?? "null"} type=${entry.type}${detail}`,
-    );
-  }
-
-  if (inspect) {
-    await harness.close(context);
-    await repo.close(context);
-    return;
-  }
-
-  const detachTrace = attachHarnessTraceLogger(harness, sessionId, (line) => console.log(line));
-  const detachContext = attachContextTokenHook(harness, sessionId, (line) => console.log(line));
+  const before = await listEntries(root, context);
+  const viewBefore = await root.context(context);
+  console.log(
+    `[Conversation] root=${root.id} entries(before)=${before.length} head=${viewBefore.head?.id ?? "none"} ` +
+      `contextMessages=${viewBefore.messages.length} estimatedContextTokens=${estimatedContextTokens(viewBefore)}`,
+  );
 
   let failed = false;
-  if (compact) {
-    console.log(
-      `[User][${sessionId}] (manual compaction)${customInstructions ? ` customInstructions="${customInstructions}"` : ""}`,
-    );
-    const result = await lane.compact(customInstructions ? { customInstructions } : undefined, context);
-    failed = logCompactionResult(result);
-  } else {
-    console.log(`[User][${sessionId}] ${prompt}`);
-    const result = await lane.prompt(prompt as string, undefined, context);
-    failed = logRunResult("Operation", result);
+  if (mode.kind !== "inspect") {
+    const trace = await attachTraceLogger(harness, root.id, (line) => console.log(line), context);
+
+    if (mode.kind === "prompt") {
+      console.log(`[User][${sessionId}] ${mode.prompt}`);
+      const submission = await root.submit({ type: "input", content: mode.prompt }, context);
+      const settled = await submission.wait(context);
+      await trace.settled(settled.id);
+      console.log(`[Submission] id=${settled.id} status=${settled.status}`);
+      failed = settled.status !== "done";
+    } else {
+      if (mode.keepTurns !== undefined) {
+        compaction.keepRecentTokens = keepRecentTokensForLastTurns(viewBefore, mode.keepTurns);
+        console.log(
+          `[Compaction] keepRecentTokens=${compaction.keepRecentTokens} (computed to keep the last ${mode.keepTurns} turns)`,
+        );
+      } else {
+        console.log(`[Compaction] keepRecentTokens=${compaction.keepRecentTokens} (from COMPACT_KEEP_RECENT_TOKENS)`);
+      }
+      console.log(`[User][${sessionId}] (manual compaction)${mode.customInstructions ? ` instructions="${mode.customInstructions}"` : ""}`);
+      const outcome = await compactConversation(harness, root, mode.customInstructions, context);
+      console.log(`[Compact] ${JSON.stringify(outcome)}`);
+      failed = outcome.kind === "task_failed" || outcome.kind === "not_placed";
+    }
+
+    await trace.stop();
   }
 
-  detachContext();
-  detachTrace();
-
-  const tipAfter = await lane.getTipId(context);
-  const entriesAfter = await lane.findEntries(undefined, context);
-  console.log(`[Lane] tipId(after)=${tipAfter ?? "null"} entries(after)=${entriesAfter.length}`);
-  for (const entry of [...entriesAfter].sort((a, b) => a.seq - b.seq)) {
-    const detail = entry.type === "message" ? ` role=${entry.message.role}` : entry.type === "compaction" ? ` tokensBefore=${entry.tokensBefore} retainedTail=${entry.retainedTail.length}` : "";
-    console.log(
-      `[Entry][after] seq=${entry.seq} id=${entry.id} parent=${entry.parentId ?? "null"} type=${entry.type}${detail}`,
-    );
+  const after = await listEntries(root, context);
+  const viewAfter = await root.context(context);
+  console.log(
+    `[Conversation] entries(after)=${after.length} head=${viewAfter.head?.id ?? "none"} ` +
+      `contextMessages=${viewAfter.messages.length} estimatedContextTokens=${estimatedContextTokens(viewAfter)}`,
+  );
+  for (const entry of after) {
+    console.log(`[Entry] ${describeEntry(entry)}${entry.head !== undefined ? ` head=${entry.head}` : ""}`);
+  }
+  for (const entry of compactionEntries(after)) {
+    console.log(`[Summary] entry=${entry.id} ${compactionSummaryText(entry)}`);
   }
 
   await harness.close(context);
-  await repo.close(context);
 
   if (failed) {
     process.exitCode = 1;

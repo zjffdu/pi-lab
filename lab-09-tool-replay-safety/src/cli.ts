@@ -2,14 +2,13 @@ import "dotenv/config";
 
 import { fileURLToPath } from "node:url";
 
-import type { RunResult, ResumeResult } from "@earendil-works/pi-agent-core";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import type { HarnessInspection, SubmissionId } from "@earendil-works/pi-durable";
 
-import { openMainLane } from "./create-harness.js";
-import { attachHarnessTraceLogger } from "./harness-trace-logger.js";
-import { BACKGROUND_CONTEXT, createSessionRepo, openOrCreateSession } from "./session-store.js";
-
-/** Fixed grouping key, same role as Lab 07/08's `SESSION_GROUP` — see `openOrCreateSession`. */
-const SESSION_GROUP = "lab-09-tool-replay-safety";
+import { modelSelectionFromEnvironment, openRootConversation } from "./create-harness.js";
+import { attachTraceLogger } from "./harness-trace-logger.js";
+import { BACKGROUND_CONTEXT, openSessionStorage } from "./session-store.js";
+import { describeEntry, listEntries } from "./transcript.js";
 
 const SESSIONS_ROOT = fileURLToPath(new URL("../session-data", import.meta.url));
 
@@ -17,12 +16,15 @@ interface CliArgs {
   sessionId: string;
   prompt: string | undefined;
   resume: boolean;
+  /** Also wait on the newest already-settled submission, to read back its stored record. */
+  settled: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   let sessionId: string | undefined;
   let prompt: string | undefined;
   let resume = false;
+  let settled = false;
 
   let index = 0;
   while (index < argv.length) {
@@ -36,6 +38,9 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (flag === "--resume") {
       resume = true;
       index += 1;
+    } else if (flag === "--settled") {
+      settled = true;
+      index += 1;
     } else {
       throw new Error(`Unknown argument "${flag}".`);
     }
@@ -44,7 +49,7 @@ function parseArgs(argv: string[]): CliArgs {
   if (!sessionId) {
     throw new Error(
       'Usage: npm run agent -- --session <id> --prompt "<text>"\n' +
-        "   or: npm run agent -- --session <id> --resume\n" +
+        "   or: npm run agent -- --session <id> --resume [--settled]\n" +
         "One CLI invocation is one turn or one resume attempt against one named session.",
     );
   }
@@ -55,112 +60,126 @@ function parseArgs(argv: string[]): CliArgs {
     throw new Error('Either --prompt "<text>" or --resume is required.');
   }
 
-  return { sessionId, prompt, resume };
+  if (settled && !resume) {
+    throw new Error("--settled is only meaningful with --resume.");
+  }
+
+  return { sessionId, prompt, resume, settled };
 }
 
-/** Returns true when the operation should be treated as a CLI failure. `NothingToResume` is
- * an expected, explicit terminal outcome for a second resume attempt — not a failure. */
-function logResult(label: string, result: RunResult | ResumeResult): boolean {
-  if (!result.ok) {
-    console.log(`[${label}] rejected: ${result.error._tag}: ${result.error.message}`);
-    return result.error._tag !== "NothingToResume";
-  }
-
-  if (result.value.status === "suspended") {
-    console.log(
-      `[${label}] operationId=${result.value.operationId} status=suspended (deferred provider response)`,
-    );
-    return false;
-  }
-
-  const record = result.value;
+function printInspection(inspection: HarnessInspection): void {
   console.log(
-    `[${label}] operationId=${record.operationId} kind=${record.kind} status=${record.status} ` +
-      `fromTip=${record.fromTipId ?? "null"} tip=${record.tipId ?? "null"} ` +
-      `startedAt=${record.startedAt} endedAt=${record.endedAt}`,
+    `[Harness] scheduling=${inspection.scheduling} unfinishedTasks=${inspection.tasks.length} ` +
+      `unsettledSubmissions=${inspection.submissions.length}`,
   );
-  if (record.status !== "completed" && record.error) {
-    console.error(`[Fatal] operation ${record.status}: ${record.error.code}: ${record.error.message}`);
-    return true;
+  for (const task of inspection.tasks) {
+    const checkpoint = task.record.state.status === "terminal" ? undefined : task.record.state.checkpoint;
+    const phase = checkpoint && typeof checkpoint === "object" && "phase" in checkpoint ? checkpoint.phase : "none";
+    // A tool task's intent checkpoint carries the replay policy committed with the call. Other tasks have none.
+    const replay = checkpoint && typeof checkpoint === "object" && "replay" in checkpoint ? ` replay=${String(checkpoint.replay)}` : "";
+    console.log(
+      `[Harness] UNFINISHED task=${task.record.id} kind=${task.record.kind} status=${task.record.state.status} ` +
+        `phase=${String(phase)}${replay} scheduler=${task.state.kind}`,
+    );
   }
-  return false;
+  for (const submission of inspection.submissions) {
+    console.log(
+      `[Harness] UNSETTLED submission=${submission.id} status=${submission.status} ` +
+        `entry=${"entry" in submission && submission.entry ? submission.entry : "none"}`,
+    );
+  }
 }
 
 async function main(): Promise<void> {
-  const { sessionId, prompt, resume } = parseArgs(process.argv.slice(2));
+  const { sessionId, prompt, resume, settled: rereadSettled } = parseArgs(process.argv.slice(2));
   const context = BACKGROUND_CONTEXT;
+  const selection = modelSelectionFromEnvironment();
+  const models = builtinModels();
 
-  const repo = createSessionRepo(SESSIONS_ROOT);
-  const { session, created } = await openOrCreateSession(repo, sessionId, SESSION_GROUP, context);
+  const { storage, created, path } = await openSessionStorage(SESSIONS_ROOT, sessionId, context);
+  console.log(`[Session] id=${sessionId} ${created ? "created" : "reopened"} path=${path}`);
 
+  // `inspect()` runs inside openRootConversation, before anything that enables scheduling
+  // (`submit`, `wait`, `resume`): it is a read of what the previous process left behind.
+  const { harness, root, inspection } = await openRootConversation(storage, { models, selection }, context);
+  printInspection(inspection);
+
+  const before = await listEntries(root, context);
   console.log(
-    `[Session] id=${session.metadata.id} ${created ? "created" : "reopened"} ` +
-      `path=${session.metadata.path}`,
+    `[Conversation] root=${root.id} entries(before)=${before.length} ` +
+      `newestEntry(before)=${before.at(-1)?.id ?? "none"}`,
   );
-
-  const { harness, lane, open } = await openMainLane(session, context);
-
-  console.log(`[Harness] lane=main openOperationsOnAttach=${open.length}`);
-  for (const operation of open) {
-    console.log(
-      `[Harness] lane=${operation.lane} OPEN operation=${operation.operationId} ` +
-        `kind=${operation.kind} startedAt=${operation.startedAt}${operation.aborting ? " aborting=true" : ""}`,
-    );
+  for (const entry of before) {
+    console.log(`[Entry][before] ${describeEntry(entry)}`);
   }
-
-  const tipBefore = await lane.getTipId(context);
-  console.log(`[Lane] tipId(before)=${tipBefore ?? "null"}`);
-
-  const entriesBefore = await lane.findEntries(undefined, context);
-  console.log(`[Lane] entries(before)=${entriesBefore.length}`);
-  for (const entry of [...entriesBefore].sort((a, b) => a.seq - b.seq)) {
-    let detail = "";
-    if (entry.type === "message") {
-      detail = ` role=${entry.message.role}`;
-      if (entry.message.role === "toolResult") {
-        detail += ` toolCallId=${entry.message.toolCallId}`;
-      }
-    }
-    console.log(
-      `[Entry][before] seq=${entry.seq} id=${entry.id} parent=${entry.parentId ?? "null"} type=${entry.type}${detail}`,
-    );
-  }
-
-  const detachLogger = attachHarnessTraceLogger(harness, sessionId, (line) => console.log(line));
 
   let failed = false;
+  const trace = await attachTraceLogger(harness, root.id, (line) => console.log(line), context);
+
   if (resume) {
-    console.log(`[Resume][${sessionId}] inspecting open operation before calling lane.resume()`);
-    const result = await lane.resume(context);
-    failed = logResult("Resume", result);
-  } else {
-    console.log(`[User][${sessionId}] ${prompt}`);
-    const result = await lane.prompt(prompt as string, undefined, context);
-    failed = logResult("Operation", result);
-  }
-
-  detachLogger();
-
-  const tipAfter = await lane.getTipId(context);
-  console.log(`[Lane] tipId(after)=${tipAfter ?? "null"}`);
-
-  const entriesAfter = await lane.findEntries(undefined, context);
-  console.log(`[Lane] entries(after)=${entriesAfter.length}`);
-  for (const entry of [...entriesAfter].sort((a, b) => a.seq - b.seq)) {
-    let detail = "";
-    if (entry.type === "message") {
-      detail = ` role=${entry.message.role}`;
-      if (entry.message.role === "toolResult") {
-        detail += ` toolCallId=${entry.message.toolCallId}`;
+    const targets = new Set<SubmissionId>(inspection.submissions.map((record) => record.id));
+    if (rereadSettled) {
+      // A settled submission is a stored record: waiting on it returns that record again and runs nothing.
+      const newestDone = await storage.scanSubmissions(
+        { conversationId: root.id, status: "done", order: "descending" },
+        1,
+        undefined,
+        context,
+      );
+      for (const record of newestDone.items) {
+        targets.add(record.id);
       }
     }
+    console.log(`[Resume][${sessionId}] reacquiring ${targets.size} submission(s)`);
+    harness.resume();
+    for (const id of targets) {
+      const submission = await harness.submission(id, context);
+      if (!submission) {
+        throw new Error(`submission ${id} cannot be reacquired`);
+      }
+      const settled = await submission.wait(context);
+      // Only a submission that was unsettled at attach produces a terminal event on the stream; an
+      // already-settled one is read back from storage and nothing more is committed for it.
+      if (inspection.submissions.some((record) => record.id === id)) {
+        await trace.settled(settled.id);
+      }
+      console.log(
+        `[Resume] submission=${settled.id} status=${settled.status} entry=${settled.entry}` +
+          `${"answer" in settled && settled.answer !== undefined ? ` answer=${settled.answer}` : ""}`,
+      );
+      failed ||= settled.status !== "done";
+    }
+    if (targets.size === 0) {
+      console.log(
+        inspection.tasks.length === 0
+          ? "[Resume] nothing to resume: no unsettled submission and no unfinished task"
+          : "[Resume] no unsettled submission to wait for, but unfinished tasks were found (see above)",
+      );
+    }
+  } else {
+    console.log(`[User][${sessionId}] ${prompt}`);
+    const submission = await root.submit({ type: "input", content: prompt as string }, context);
+    console.log(`[Submission] admitted id=${submission.id}`);
+    const settled = await submission.wait(context);
+    await trace.settled(settled.id);
     console.log(
-      `[Entry][after] seq=${entry.seq} id=${entry.id} parent=${entry.parentId ?? "null"} type=${entry.type}${detail}`,
+      `[Submission] id=${settled.id} status=${settled.status} entry=${settled.entry}` +
+        `${"answer" in settled && settled.answer !== undefined ? ` answer=${settled.answer}` : ""}`,
     );
+    failed = settled.status !== "done";
+  }
+
+  await trace.stop();
+
+  const after = await listEntries(root, context);
+  console.log(
+    `[Conversation] entries(after)=${after.length} newestEntry(after)=${after.at(-1)?.id ?? "none"}`,
+  );
+  for (const entry of after) {
+    console.log(`[Entry][after] ${describeEntry(entry)}`);
   }
 
   await harness.close(context);
-  await repo.close(context);
 
   if (failed) {
     process.exitCode = 1;

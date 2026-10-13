@@ -11,7 +11,8 @@ import { dirname } from "node:path";
  * file ever ends up with a duplicated entry for the same logical request.
  */
 export interface OutboxRecord {
-  invocationId: string;
+  taskId: string;
+  callId: string;
   bookingNo: string;
   reason: string;
   holdId: string;

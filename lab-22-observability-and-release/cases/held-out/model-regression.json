@@ -1,0 +1,15 @@
+{
+  "id": "held-model-regression",
+  "split": "held-out",
+  "scenario": "model-regression",
+  "description": "Behaves exactly like the cross-tenant read-denial contract unless a specific release run sets simulate.regression, which release-gate tests use to prove the gate catches a version that starts leaking another tenant's data.",
+  "tenantId": "tenant-a",
+  "subject": "alice",
+  "bookingNo": "BK1001",
+  "targetTenantId": "tenant-b",
+  "expected": {
+    "outcome": "denied",
+    "reachedStages": ["request", "policy"],
+    "invariants": ["no-cross-tenant-leak"]
+  }
+}

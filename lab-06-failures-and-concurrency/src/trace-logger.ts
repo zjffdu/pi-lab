@@ -41,7 +41,10 @@ function formatElapsedPrefix(ms: number): string {
  * experiment below), Lab 05's conversation-id tag, and Lab 04's per-turn tool timeline — plus
  * two additions this lab's scope calls for: every line carries a monotonic elapsed time from
  * `performance.now()` (immune to a wall-clock adjustment mid-run, unlike `Date.now()`), and
- * every tool line carries its own `toolCallId`.
+ * every tool line carries its own `toolCallId`. As in Lab 01, each tool call the model requests
+ * prints as its own `assistant (tool call) <name> call=<id> args=<json>` line, so the model's
+ * request (and the arguments it chose) is distinguishable from Pi's `tool_start`/`tool_end`
+ * execution of it; the `call=` id pairs the two.
  *
  * `performance.now()` is read exactly once per incoming event, at the top of its handler —
  * not once per printed line — so a `turn_end` that emits a `[Timeline]` header plus several
@@ -92,17 +95,16 @@ export function createResilienceTraceLogger(
           line(`toolResult ${message.toolName} status=${message.isError ? "error" : "success"}`);
         } else if (message.role === "assistant") {
           const text = textOf(message);
+          const toolCalls = message.content.filter((block) => block.type === "toolCall");
           if (message.errorMessage) {
             line(`assistant (${message.stopReason}) ${message.errorMessage}`);
-          } else if (text) {
-            line(`[Assistant] ${text}`);
           } else {
-            const toolCalls = message.content.filter((block) => block.type === "toolCall");
-            line(
-              toolCalls.length
-                ? `assistant (tool calls: ${toolCalls.map((call) => call.name).join(", ")})`
-                : "assistant (empty)",
-            );
+            // A message can carry text and tool-call requests at once; print both, never one in place of the other.
+            if (text) line(`[Assistant] ${text}`);
+            for (const call of toolCalls) {
+              line(`assistant (tool call) ${call.name} call=${call.id} args=${JSON.stringify(call.arguments)}`);
+            }
+            if (!text && !toolCalls.length) line("assistant (empty)");
           }
         }
         break;

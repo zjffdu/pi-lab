@@ -1,0 +1,140 @@
+{
+  "tenants": {
+    "tenant-a": [
+      {
+        "bookingNo": "BK1001",
+        "status": "booked",
+        "documentCutoff": "2026-09-25T12:00:00Z",
+        "updatedAt": "2026-09-19T08:00:00Z",
+        "containers": [
+          {
+            "containerNo": "MSKU0000001",
+            "weightKg": 12000
+          },
+          {
+            "containerNo": "MSKU0000002",
+            "weightKg": 11500
+          },
+          {
+            "containerNo": "MSKU0000003",
+            "weightKg": 9800
+          },
+          {
+            "containerNo": "MSKU0000004",
+            "weightKg": 10250
+          },
+          {
+            "containerNo": "MSKU0000005",
+            "weightKg": 8700
+          }
+        ]
+      },
+      {
+        "bookingNo": "BK2001",
+        "status": "in_transit",
+        "documentCutoff": "2026-09-01T12:00:00Z",
+        "updatedAt": "2026-09-18T10:30:00Z",
+        "containers": [
+          {
+            "containerNo": "MSKV0000001",
+            "weightKg": 15000
+          },
+          {
+            "containerNo": "MSKV0000002",
+            "weightKg": 14000
+          }
+        ]
+      },
+      {
+        "bookingNo": "BK3001",
+        "status": "booked",
+        "documentCutoff": "2026-10-05T12:00:00Z",
+        "updatedAt": "2026-09-19T16:45:00Z",
+        "containers": [
+          {
+            "containerNo": "MSKW0000001",
+            "weightKg": 1000
+          },
+          {
+            "containerNo": "MSKW0000002",
+            "weightKg": 1100
+          },
+          {
+            "containerNo": "MSKW0000003",
+            "weightKg": 1200
+          },
+          {
+            "containerNo": "MSKW0000004",
+            "weightKg": 1300
+          },
+          {
+            "containerNo": "MSKW0000005",
+            "weightKg": 1400
+          },
+          {
+            "containerNo": "MSKW0000006",
+            "weightKg": 1500
+          },
+          {
+            "containerNo": "MSKW0000007",
+            "weightKg": 1600
+          },
+          {
+            "containerNo": "MSKW0000008",
+            "weightKg": 1700
+          },
+          {
+            "containerNo": "MSKW0000009",
+            "weightKg": 1800
+          },
+          {
+            "containerNo": "MSKW0000010",
+            "weightKg": 1900
+          },
+          {
+            "containerNo": "MSKW0000011",
+            "weightKg": 2000
+          },
+          {
+            "containerNo": "MSKW0000012",
+            "weightKg": 2100
+          }
+        ]
+      },
+      {
+        "bookingNo": "BK4001",
+        "status": "booked",
+        "documentCutoff": "2026-09-30T12:00:00Z",
+        "updatedAt": "2026-08-01T00:00:00Z",
+        "containers": [
+          {
+            "containerNo": "MSKX0000001",
+            "weightKg": 5000
+          }
+        ]
+      }
+    ],
+    "tenant-b": [
+      {
+        "bookingNo": "BK1001",
+        "status": "in_transit",
+        "documentCutoff": "2026-08-10T12:00:00Z",
+        "updatedAt": "2026-09-18T09:00:00Z",
+        "containers": [
+          {
+            "containerNo": "TCLU0000001",
+            "weightKg": 20000
+          },
+          {
+            "containerNo": "TCLU0000002",
+            "weightKg": 19000
+          },
+          {
+            "containerNo": "TCLU0000003",
+            "weightKg": 21000
+          }
+        ]
+      }
+    ]
+  }
+}

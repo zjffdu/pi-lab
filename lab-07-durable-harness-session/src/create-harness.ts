@@ -1,16 +1,19 @@
+import type { Context } from "@earendil-works/chord";
+import type { Models } from "@earendil-works/pi-ai";
 import {
-  AgentHarness,
-  type AgentLane,
-  type Context,
-  type OpenOperation,
-  type Session,
-} from "@earendil-works/pi-agent-core";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+  type Conversation,
+  createRegistry,
+  defineExtension,
+  Harness,
+  type HarnessInspection,
+  section,
+  type Storage,
+} from "@earendil-works/pi-durable";
 
 import { BookingRepository } from "./booking-repository.js";
 import { createGetBookingTool } from "./get-booking-tool.js";
 
-const SYSTEM_PROMPT = `You are a booking lookup assistant in a learning lab.
+export const SYSTEM_PROMPT = `You are a booking lookup assistant in a learning lab.
 
 Rules:
 - Call get_booking before making any claim about a specific booking number.
@@ -34,57 +37,78 @@ export function modelSelectionFromEnvironment(
 ): ModelSelection {
   return {
     provider: environment.PI_PROVIDER?.trim() || "deepseek",
-    modelId: environment.PI_MODEL?.trim() || "deepseek-v4-flash",
+    modelId: environment.PI_MODEL?.trim() || "deepseek-flash",
   };
 }
 
-export interface OpenMainLaneResult {
-  harness: AgentHarness;
-  lane: AgentLane;
-  /** Lanes with a durable operation left open when the harness attached to this session. */
-  open: OpenOperation[];
+/** Fails at startup with the catalog's real ids, instead of failing inside the first model request. */
+export function assertModelAvailable(models: Models, selection: ModelSelection): void {
+  if (models.getModel(selection.provider, selection.modelId)) {
+    return;
+  }
+
+  const available = models
+    .getModels(selection.provider)
+    .map((candidate) => candidate.id)
+    .slice(0, 12)
+    .join(", ");
+  throw new Error(
+    `Unknown model ${selection.provider}/${selection.modelId}. ` +
+      `Available model ids include: ${available || "none"}`,
+  );
 }
 
 /**
- * Attaches a fresh `AgentHarness` to an already-open `Session` and acquires its one
- * `main` lane. `AgentHarness.create()` restores every lane already recorded in the
- * session (branch tip, lane configuration, and any in-flight operation) before this
- * function returns — attaching a harness is not itself a durable write. `open` reports
- * any lane whose last operation was never driven to a terminal result; this lab's scope
- * never leaves one open (that is Lab 08), so it should always come back empty here.
+ * Tools and system-prompt sections reach the harness through a registry of named extensions
+ * that this process owns. Nothing in the registry is stored. By default a conversation follows
+ * whatever extensions the process installed, and it records extension *names* only when some are
+ * selected explicitly, so the code must be installed again in every process that reopens the session.
  */
-export async function openMainLane(
-  session: Session,
-  context: Context,
-  selection = modelSelectionFromEnvironment(),
-): Promise<OpenMainLaneResult> {
-  const models = builtinModels();
-  const model = models.getModel(selection.provider, selection.modelId);
-
-  if (!model) {
-    const available = models
-      .getModels(selection.provider)
-      .map((candidate) => candidate.id)
-      .slice(0, 12)
-      .join(", ");
-    throw new Error(
-      `Unknown model ${selection.provider}/${selection.modelId}. ` +
-        `Available model ids include: ${available || "none"}`,
-    );
-  }
-
-  const repository = BookingRepository.fromDefaultFixture();
-  const { harness, open } = await AgentHarness.create(
-    {
-      session,
-      models,
-      model,
+export function createBookingRegistry(repository = BookingRepository.fromDefaultFixture()) {
+  const registry = createRegistry();
+  registry.install(
+    defineExtension({
+      name: "booking",
       tools: [createGetBookingTool(repository)],
-      systemPrompt: SYSTEM_PROMPT,
-    },
+      sections: [section("preamble", () => SYSTEM_PROMPT, { tag: false })],
+    }),
+  );
+  return registry;
+}
+
+export interface OpenedConversation {
+  harness: Harness;
+  root: Conversation;
+  /**
+   * Unfinished tasks and unsettled submissions found when the harness attached. `inspect()` writes
+   * nothing and runs no task code, so it is a safe look at what the previous process left behind.
+   * This lab's scope never leaves anything behind (that is Lab 08), so it should always be empty.
+   */
+  inspection: HarnessInspection;
+}
+
+/**
+ * Attaches a fresh `Harness` to an already-open storage and returns its root conversation.
+ * `Harness.open()` and `root()` rebuild all runtime state from what the storage holds; the
+ * storage, not the harness, is what survives a restart. `root()` creates the conversation with
+ * the given model on first use and returns the stored one afterwards.
+ */
+export async function openRootConversation(
+  storage: Storage,
+  options: { models: Models; selection?: ModelSelection; registry?: ReturnType<typeof createBookingRegistry> },
+  context: Context,
+): Promise<OpenedConversation> {
+  const selection = options.selection ?? modelSelectionFromEnvironment();
+  assertModelAvailable(options.models, selection);
+
+  const harness = await Harness.open(
+    storage,
+    { models: options.models, registry: options.registry ?? createBookingRegistry() },
     context,
   );
-
-  const lane = await harness.lane("main", context);
-  return { harness, lane, open };
+  const inspection = await harness.inspect(context);
+  const root = await harness.root(context, {
+    agent: { model: { provider: selection.provider, modelId: selection.modelId } },
+  });
+  return { harness, root, inspection };
 }

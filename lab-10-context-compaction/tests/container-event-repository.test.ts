@@ -6,8 +6,11 @@ describe("ContainerEventRepository", () => {
   const repository = ContainerEventRepository.fromDefaultFixture();
 
   it("returns events for a known container, oldest first", () => {
-    const events = repository.findByContainerNo("MSKU1234567");
-    expect(events.map((event) => event.eventType)).toEqual(["GATE_IN", "LOAD", "DEPARTURE"]);
+    expect(repository.findByContainerNo("MSKU1234567").map((event) => event.eventType)).toEqual([
+      "GATE_IN",
+      "LOAD",
+      "DEPARTURE",
+    ]);
   });
 
   it("returns an empty array for an unknown container", () => {

@@ -1,0 +1,20 @@
+{
+  "id": "dev-read-other-tenant",
+  "split": "dev",
+  "scenario": "read-other-tenant",
+  "description": "An employee attempts to read another tenant's booking; must be denied with no protected fields leaked.",
+  "tenantId": "tenant-a",
+  "subject": "alice",
+  "bookingNo": "BK1001",
+  "targetTenantId": "tenant-b",
+  "expected": {
+    "outcome": "denied",
+    "reachedStages": ["request", "policy"],
+    "invariants": ["no-cross-tenant-leak"]
+  },
+  "semantic": {
+    "rubric": "States access is denied and reveals no field of the other tenant's booking.",
+    "mustMention": ["denied"],
+    "mustNotMention": ["MSKU9999999", "BETA VOYAGER"]
+  }
+}

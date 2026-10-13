@@ -1,122 +1,207 @@
-import type { AgentHarness, AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
+import {
+  type AgentEvent,
+  type ConversationId,
+  type EntryRecord,
+  type Harness,
+  type SubmissionId,
+  watchEvents,
+} from "@earendil-works/pi-durable";
+
+import { CaseNote, type CaseNoteData } from "./case-note-entries.js";
+import { messageText } from "./transcript.js";
 
 export type TraceWriter = (line: string) => void;
 
-function textOf(message: AgentMessage): string {
-  if (message.role === "user") {
-    return typeof message.content === "string"
-      ? message.content
-      : message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
-  }
-  if (message.role === "assistant" || message.role === "toolResult") {
-    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
-  }
-  return "";
+export interface TraceHandle {
+  /**
+   * Resolves once the trace has rendered every line up to this submission's terminal `submission`
+   * event, which the stream delivers after `run_end`. `WatchHandle.stop()` only promises to stop
+   * future callbacks, not to flush pending frames, so callers wait here before stopping. If the
+   * event never arrives within `timeoutMs`, a visible warning line is written and the wait ends.
+   */
+  settled(submissionId: SubmissionId, timeoutMs?: number): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface TraceOptions {
+  /** Prefix on every line, e.g. `c20`, so the lines of two branches stay distinguishable in one log. */
+  tag?: string;
+}
+
+function describeCaseNote(note: CaseNoteData, entryId: number, modelMessages: number): string {
+  const reach =
+    modelMessages === 0
+      ? "durable-only (no model message)"
+      : `projects ${modelMessages} model message${modelMessages === 1 ? "" : "s"}`;
+  return `case_note ${note.noteId} visibility=${note.visibility} ${reach} entry=${entryId}`;
+}
+
+function describeNonMessageEntry(entry: EntryRecord): string {
+  return CaseNote.is(entry)
+    ? describeCaseNote(entry.data, entry.id, entry.model?.length ?? 0)
+    : `${entry.kind} entry=${entry.id}`;
 }
 
 /**
- * Renders `harness.events` as an indented tree — `▶`/`◀` mark a span opening/closing,
- * aligned at the same indent. Every line keeps an explicit `[sessionId]` tag:
- * `scripts/context-projection-demo.ts` runs two scenarios (no projector, then with one) as
- * separate sessions *within one process*, so their two trace streams land in the same
- * combined stdout one after another — the tag is what tells a reader which scenario a given
- * line belongs to.
+ * Renders ONE conversation's committed event stream as an indented run/turn/tool tree — the same
+ * `▶`/`◀` bracket style as the earlier labs' loggers. `watchEvents` is a stream derived from storage
+ * commits, one batch per commit, not callbacks fired from inside a live agent loop: the events describe
+ * what was durably committed, in commit order.
  *
- * "run" is the only genuine LIFO span here — this lab never subscribed to
- * `turn_start`/`turn_end` (its focus is durable entries and what reaches the model, not
- * per-turn tool timing), so a tool call nests directly under "run". A tool call itself is
- * still NOT pushed onto the stack — see Lab 09's version of this file for why (crash
- * recovery and parallel tool execution both need tool lines to stay flat siblings, not
- * nested spans).
+ * The snapshot a stream delivers at attachment holds the entries committed before it and is deliberately
+ * not replayed as trace output, so attach the logger before writing the entries a run should show.
+ *
+ * The model's *request* and Pi's *execution* are separate lines: `assistant (tool call) name call=<id>
+ * args=<json>` is what the model asked for, and the `tool_start`/`tool_end` pair below it is the harness
+ * running it; the shared `call=` id pairs them. Only "run" and "turn" are genuine LIFO spans. A tool call
+ * prints as a plain line at the current depth, so overlapping tool calls stay siblings instead of
+ * corrupting every indent after them.
+ *
+ * A `case_note` entry is rendered from its identifying fields only: note id, visibility, and how many model
+ * messages it carries. It is never rendered from its text or its `data`, because the event objects the stream
+ * delivers for it (`message_end`, `entry_appended`) hold the whole record, `internalOnly` included, and a
+ * trace line is not the place where that value is allowed to land. A note with no model message arrives as
+ * `entry_appended`, not `message_end`, which is also why any entry without a message is rendered that way.
+ *
+ * `message_start`, `message_update`, `tool_execution_update`, `usage_changed`, and `inbox_update` are not
+ * rendered: every fact they would add (role, entry id, outcome) is already on the matching `message_end` /
+ * `tool_execution_end` line. A terminal `submission` event is consumed only to release `settled()`.
  */
-export function attachHarnessTraceLogger(
-  harness: AgentHarness,
-  sessionId: string,
+export async function attachTraceLogger(
+  harness: Harness,
+  conversationId: ConversationId,
   write: TraceWriter,
-): () => void {
-  type Span = "run";
+  context: Context,
+  options: TraceOptions = {},
+): Promise<TraceHandle> {
+  type Span = "run" | "turn";
   const stack: Span[] = [];
+  const tag = options.tag === undefined ? "" : `[${options.tag}] `;
   const pad = () => "  ".repeat(stack.length);
-  const line = (text: string) => write(`[${sessionId}] ${pad()}${text}`);
+  const emit = (text: string) => write(`${tag}${pad()}${text}`);
   const open = (kind: Span, text: string) => {
-    line(text);
+    emit(text);
     stack.push(kind);
   };
   const close = (kind: Span, text: string) => {
     if (stack[stack.length - 1] === kind) {
       stack.pop();
     }
-    line(text);
+    emit(text);
   };
 
-  const unsubscribers = [
-    harness.events.on("lane_created", (event) => {
-      write(`[${sessionId}] lane "${event.lane}" created`);
-    }),
-    harness.events.on("run_start", (event) => {
-      open("run", `▶ run ${event.runId}`);
-    }),
-    harness.events.on("tool_start", (event) => {
-      line(`▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
-    }),
-    harness.events.on("tool_end", (event) => {
-      line(`◀ tool_end ${event.toolName} status=${event.isError ? "error" : "success"}`);
-    }),
-    harness.events.on("message_end", (event) => {
-      const message = event.message;
-      const entry = ` entry=${event.entryId ?? "none"}`;
-      if (message.role === "user") {
-        line(`user      "${textOf(message)}"${entry}`);
-      } else if (message.role === "toolResult") {
-        line(`toolResult ${message.toolName} status=${message.isError ? "error" : "success"}${entry}`);
-      } else {
-        const text = textOf(message);
-        line(text ? `[Assistant]${entry} ${text}` : `assistant (tool call only, no text)${entry}`);
-      }
-    }),
-    // Only non-message entries are logged here: a message entry's id is already printed on
-    // its own message_end line above. A "custom" entry — this lab's own case-note records —
-    // has no message_end of its own; this is the only place its landing is ever visible in
-    // the live trace, which is also why it is worth printing `customType` for it specifically.
-    harness.events.on("entry_added", (event) => {
-      if (event.entry.type !== "message") {
-        const customType = event.entry.type === "custom" ? ` customType=${event.entry.customType}` : "";
-        line(`entry_added id=${event.entry.id} seq=${event.entry.seq} type=${event.entry.type}${customType}`);
-      }
-    }),
-    harness.events.on("run_end", (event) => {
-      close("run", `◀ run_end status=${event.status} fromTip=${event.fromTipId ?? "null"} tip=${event.tipId ?? "null"}`);
-    }),
-  ];
+  let turnNumber = 0;
+  let toolResultsInTurn = 0;
 
-  return () => {
-    for (const unsubscribe of unsubscribers) {
-      unsubscribe();
+  const settledIds = new Set<SubmissionId>();
+  const waiters = new Map<SubmissionId, () => void>();
+
+  const render = (event: AgentEvent): void => {
+    switch (event.type) {
+      case "submission":
+        if (event.record.status === "done" || event.record.status === "unanswered") {
+          settledIds.add(event.record.id);
+          waiters.get(event.record.id)?.();
+        }
+        break;
+      case "run_start":
+        open("run", `▶ run inputs=[${event.inputs.join(",")}]`);
+        break;
+      case "turn_start":
+        turnNumber += 1;
+        toolResultsInTurn = 0;
+        open("turn", `▶ turn #${turnNumber}`);
+        break;
+      case "entry_appended": {
+        // An entry with no model message. Nothing about its payload is printed.
+        emit(describeNonMessageEntry(event.entry));
+        break;
+      }
+      case "message_end": {
+        const message = event.entry.model?.[0];
+        const entry = `entry=${event.entry.id}`;
+        if (CaseNote.is(event.entry)) {
+          emit(describeCaseNote(event.entry.data, event.entry.id, event.entry.model?.length ?? 0));
+        } else if (!message) {
+          emit(`${event.entry.kind} ${entry}`);
+        } else if (message.role === "user") {
+          emit(`user       "${messageText(message)}" ${entry}`);
+        } else if (message.role === "system") {
+          emit(`system     (prompt and tool changes) ${entry}`);
+        } else if (message.role === "toolResult") {
+          toolResultsInTurn += 1;
+          emit(`toolResult ${message.toolName} status=${message.isError ? "error" : "success"} ${entry}`);
+        } else {
+          const text = messageText(message);
+          const toolCalls = message.content.filter((block) => block.type === "toolCall");
+          if (message.errorMessage) {
+            emit(`assistant (${message.stopReason}) ${message.errorMessage} ${entry}`);
+          } else {
+            // A message can carry text and tool-call requests at once; print both, never one in place of the other.
+            if (text) {
+              emit(`[Assistant] ${entry} ${text}`);
+            }
+            for (const call of toolCalls) {
+              emit(`assistant (tool call) ${call.name} call=${call.id} args=${JSON.stringify(call.arguments)} ${entry}`);
+            }
+            if (!text && toolCalls.length === 0) {
+              emit(`assistant (empty) ${entry}`);
+            }
+          }
+        }
+        break;
+      }
+      case "tool_execution_start":
+        emit(`▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
+        break;
+      case "tool_execution_end": {
+        const result = event.entry?.model?.[0];
+        const failed = result?.role === "toolResult" && result.isError;
+        emit(`◀ tool_end ${event.toolName} status=${failed ? "error" : "success"}`);
+        break;
+      }
+      case "auto_retry_start":
+        emit(`↻ retry attempt=${event.attempt} ${event.errorMessage}`);
+        break;
+      case "turn_end":
+        close("turn", `◀ turn_end #${turnNumber} tool_results=${toolResultsInTurn}`);
+        break;
+      case "run_end":
+        close("run", `◀ run_end inputs=[${event.inputs.join(",")}]`);
+        break;
+      default:
+        break;
     }
   };
-}
 
-/**
- * `transform_context` fires once per real provider request with the exact `AgentMessage[]`
- * that request's context will contain — after `buildSessionContext()` has already run every
- * `custom` entry through `entryProjectors` (or, with none registered for its `customType`,
- * dropped it). This is this lab's most direct way to observe *what actually reached the
- * model*: message count, role, and (for a `"custom"`-role message) which durable entry it
- * came from — never the message's own text.
- *
- * Printed as a standalone `[Context][sessionId]` line, not folded into the run/tool tree
- * above: it fires from a separate `harness.hooks` registration (not `harness.events`), on a
- * cadence tied to provider requests rather than to run/tool boundaries, so it does not
- * correspond to any one span on that stack.
- */
-export function attachProjectedContextLogger(harness: AgentHarness, sessionId: string, write: TraceWriter): () => void {
-  return harness.hooks.on("transform_context", (event) => {
-    const roles = event.messages.map((message) => message.role).join(", ");
-    const customMessageCount = event.messages.filter((message) => message.role === "custom").length;
-    write(
-      `[Context][${sessionId}] messages=${event.messages.length} roles=[${roles}] ` +
-        `customMessages=${customMessageCount}`,
-    );
-    return undefined;
+  const stream = await watchEvents(harness, conversationId, context);
+  stream.start(async (events) => {
+    for (const event of events) {
+      render(event);
+    }
   });
+
+  return {
+    settled(submissionId, timeoutMs = 5000) {
+      if (settledIds.has(submissionId)) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          waiters.delete(submissionId);
+          emit(`trace: no settle event for submission ${submissionId} within ${timeoutMs}ms`);
+          resolve();
+        }, timeoutMs);
+        waiters.set(submissionId, () => {
+          clearTimeout(timer);
+          waiters.delete(submissionId);
+          resolve();
+        });
+      });
+    },
+    async stop() {
+      await stream.stop();
+    },
+  };
 }

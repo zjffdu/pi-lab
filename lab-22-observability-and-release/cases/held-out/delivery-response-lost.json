@@ -1,0 +1,15 @@
+{
+  "id": "held-delivery-response-lost",
+  "split": "held-out",
+  "scenario": "delivery-response-lost",
+  "description": "An approved change is delivered; the acknowledgement is lost, but the receiver actually applied it. Reconciliation must resolve to the real outcome without a duplicate effect.",
+  "tenantId": "tenant-a",
+  "subject": "dave",
+  "bookingNo": "BK1001",
+  "approver": "bob",
+  "expected": {
+    "outcome": "executed",
+    "reachedStages": ["request", "approval", "connector", "retry", "delivery"],
+    "invariants": ["single-effect-per-idempotency-key"]
+  }
+}

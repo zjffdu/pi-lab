@@ -1,0 +1,14 @@
+{
+  "id": "dev-propose-without-approval",
+  "split": "dev",
+  "scenario": "propose-without-approval",
+  "description": "An operator proposes a change; it must be pending with zero business effects until an approver decides.",
+  "tenantId": "tenant-a",
+  "subject": "alice",
+  "bookingNo": "BK1001",
+  "expected": {
+    "outcome": "pending_approval",
+    "reachedStages": ["request", "policy", "tool", "approval"],
+    "invariants": ["zero-effects-while-pending"]
+  }
+}

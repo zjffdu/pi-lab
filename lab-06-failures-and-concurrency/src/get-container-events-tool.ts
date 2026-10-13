@@ -6,7 +6,7 @@ import type { ContainerEventRepository } from "./container-event-repository.js";
 const getContainerEventsParameters = Type.Object(
   {
     containerNo: Type.String({
-      description: "Exact container number returned by get_booking, for example MSKU1234567",
+      description: "One container number taken from the containerNos returned by get_booking, for example MSKU1234567",
       minLength: 1,
     }),
   },
@@ -33,8 +33,9 @@ export function createGetContainerEventsTool(
     label: "Get container events",
     description:
       "List the timestamped movement events (GATE_IN, LOAD, DEPARTURE, DISCHARGE, GATE_OUT) " +
-      "for one container, oldest first. Requires the containerNo from get_booking. " +
-      "Does not depend on get_port_status and may be requested in the same batch as it.",
+      "for one container, oldest first. Takes one containerNo from get_booking's containerNos; " +
+      "call it once per container. Calls for different containers, and get_port_status, do not " +
+      "depend on each other and may be requested in the same batch.",
     parameters: getContainerEventsParameters,
     async execute(_toolCallId, params, signal) {
       signal?.throwIfAborted();

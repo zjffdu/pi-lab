@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { isCaseNoteData, type CaseNoteData } from "./case-note-entries.js";
+import { type CaseNoteData, isCaseNoteData } from "./case-note-entries.js";
 
 export class CaseNoteRepository {
   public constructor(private readonly notes: readonly CaseNoteData[]) {}
@@ -16,11 +16,11 @@ export class CaseNoteRepository {
     return new CaseNoteRepository(parsed);
   }
 
-  public findByBookingNo(bookingNo: string): CaseNoteData[] {
-    return this.notes.filter((note) => note.bookingNo === bookingNo);
-  }
-
   public all(): readonly CaseNoteData[] {
     return this.notes;
+  }
+
+  public findByBookingNo(bookingNo: string): CaseNoteData[] {
+    return this.notes.filter((note) => note.bookingNo === bookingNo);
   }
 }

@@ -1,0 +1,7 @@
+{
+  "minTaskSuccessRate": 0.8,
+  "maxAuthorizationViolationRate": 0.0,
+  "minSemanticScoreFraction": 0.5,
+  "minJudgeAgreementRate": 0.5,
+  "maxWallClockMsP95": 5000
+}

@@ -26,18 +26,18 @@ describe("AttemptLog", () => {
 
   it("creates missing parent directories and appends one JSON line per attempt", () => {
     const log = new AttemptLog(filePath);
-    log.recordSync({ tool: "t", toolCallId: "call-1", invocationId: "inv-1", detail: "a", at: 1 });
-    log.recordSync({ tool: "t", toolCallId: "call-1", invocationId: "inv-1", detail: "a", at: 2 });
+    log.recordSync({ tool: "t", callId: "call-1", taskId: "task-1", detail: "a", at: 1 });
+    log.recordSync({ tool: "t", callId: "call-1", taskId: "task-1", detail: "a", at: 2 });
 
     expect(log.readAll()).toEqual([
-      { tool: "t", toolCallId: "call-1", invocationId: "inv-1", detail: "a", at: 1 },
-      { tool: "t", toolCallId: "call-1", invocationId: "inv-1", detail: "a", at: 2 },
+      { tool: "t", callId: "call-1", taskId: "task-1", detail: "a", at: 1 },
+      { tool: "t", callId: "call-1", taskId: "task-1", detail: "a", at: 2 },
     ]);
   });
 
   it("reset() removes the file, and readAll() reports empty again", () => {
     const log = new AttemptLog(filePath);
-    log.recordSync({ tool: "t", toolCallId: "call-1", invocationId: "inv-1", detail: "a", at: 1 });
+    log.recordSync({ tool: "t", callId: "call-1", taskId: "task-1", detail: "a", at: 1 });
     expect(log.readAll()).toHaveLength(1);
 
     log.reset();

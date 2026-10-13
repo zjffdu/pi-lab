@@ -1,52 +1,55 @@
-import {
-  BACKGROUND_CONTEXT,
-  JsonlSessionRepo,
-  type Context,
-  type JsonlSessionMetadata,
-  type Session,
-} from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { stat } from "node:fs/promises";
+import { join } from "node:path";
+
+import type { Context } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { type JsonlStorage, openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 
 export { BACKGROUND_CONTEXT };
 
 /**
- * One JSONL repository rooted at `sessionsRoot`. The repo does not need `sessionsRoot` to
- * exist yet — `create()` makes the directory on first use.
+ * One session is one JSONL storage directory under `sessionsRoot`, named after the session id.
+ * The directory is the whole identity: there is no separate index, no grouping key, and no
+ * per-process registry. Two ids can never share a directory, and an id that was never used
+ * simply has no directory yet.
  */
-export function createSessionRepo(sessionsRoot: string): JsonlSessionRepo {
-  const fileSystem = new NodeExecutionEnv({ cwd: sessionsRoot });
-  return new JsonlSessionRepo({ fileSystem, sessionsRoot });
+export function sessionDirectory(sessionsRoot: string, sessionId: string): string {
+  if (sessionId.length === 0) {
+    throw new Error("session id must not be empty");
+  }
+  return join(sessionsRoot, encodeURIComponent(sessionId));
 }
 
-export interface OpenOrCreateResult {
-  session: Session<JsonlSessionMetadata>;
+async function directoryExists(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+export interface OpenedSessionStorage {
+  storage: JsonlStorage;
+  /** True when this call created the storage directory; false when it reopened an existing one. */
   created: boolean;
+  path: string;
 }
 
 /**
- * `JsonlSessionRepo` groups session files on disk by a `(cwd, id)` pair, not by `id`
- * alone — `cwd` is the repo's own logical grouping key, unrelated to this process's
- * actual working directory. Callers must pass the exact same `cwd` string on every
- * invocation that should be able to find the same session again; this lab uses one fixed
- * constant (see `SESSION_GROUP` in `cli.ts`) so a session id resolves the same way
- * regardless of the shell directory the CLI happens to be run from.
- *
- * Reopening is a two-step lookup because the repo's `open()` needs full metadata (the
- * exact file path, not just the id) — `list()` is how you recover that metadata for an
- * id you already know.
+ * `openNodeJsonlStorage` creates the directory on first use and reopens it afterwards with
+ * the same call, so "created or reopened" is decided here by looking before opening. One
+ * process owns a storage at a time; pi-durable does no cross-process locking.
  */
-export async function openOrCreateSession(
-  repo: JsonlSessionRepo,
-  id: string,
-  cwd: string,
+export async function openSessionStorage(
+  sessionsRoot: string,
+  sessionId: string,
   context: Context = BACKGROUND_CONTEXT,
-): Promise<OpenOrCreateResult> {
-  const existing = await repo.list({ cwd }, context);
-  const metadata = existing.find((candidate) => candidate.id === id);
-
-  if (metadata) {
-    return { session: await repo.open(metadata, context), created: false };
-  }
-
-  return { session: await repo.create({ id, cwd }, context), created: true };
+): Promise<OpenedSessionStorage> {
+  const path = sessionDirectory(sessionsRoot, sessionId);
+  const created = !(await directoryExists(path));
+  const storage = await openNodeJsonlStorage(path, context);
+  return { storage, created, path };
 }

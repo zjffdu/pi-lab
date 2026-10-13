@@ -1,330 +1,156 @@
-# Lab 07 — Durable AgentHarness Session
+# Lab 07 — Durable Harness Session
 
-Give a Pi conversation a body that outlives the process. This lab swaps Lab 05's plain
-`Map<conversationId, Agent>` (gone the instant the process exits) for a JSONL-backed
-`Session`, an `AgentHarness` attached to it, and one `main` lane — and shows exactly what
-does and does not come back after a clean restart.
+English | [中文](README.zh-CN.md)
 
-## Learning objective
+**Question:** after a process restart, how does a conversation that already finished a turn pick up where it left off?
+**Answer this lab shows:** the conversation lives in files, not in the process. Two things follow:
 
-By the end of this lab, you can explain this from your own console output and JSONL files:
+- **The files hold the conversation.** Every message and tool result is committed to a JSONL storage directory. A new
+  process opens the same directory and reads the same entries back.
+- **The process holds only the machinery.** The `Harness` (model calls, tools, scheduler) is built fresh on every start.
+  Nothing in it needs to survive.
+
+Think of a notebook and a pen: the notebook is the storage, the pen is the harness. Replace the pen and the notes are still there.
+
+## A concrete scenario
+
+You build a support assistant. A customer asks about booking `BK1001`, then, ten minutes later, *"Which container is it
+using?"* In between, your service was redeployed.
+
+| Moment | Without durable storage | With this lab's approach |
+| --- | --- | --- |
+| Customer asks about `BK1001` | the assistant looks the booking up and answers | the same, and every message and the tool result is committed to disk |
+| Redeploy | the process dies and the transcript dies with it | the process dies, the files stay |
+| Customer asks "Which container is it using?" | a new process knows nothing and must ask "which booking?" | a new process opens the same session, reads the transcript, and names both containers without looking the booking up again |
+| A different customer asks the same follow-up | n/a | their session is a different directory, so the assistant asks which booking they mean |
+
+Who needs to understand this? **You, the developer.** Customers never see sessions. You decide what a session id maps to
+(a chat, a user, a ticket) and make sure the same id reaches the same storage after a restart.
+
+| In the scenario | In the lab |
+| --- | --- |
+| the customer's chat | a session id (`conversation-a`) |
+| the notebook | the storage directory `session-data/<id>/` |
+| the pen | the `Harness`, opened by `Harness.open(storage)` |
+| the thread of the chat | the root `Conversation` and its `Entry` records |
+| one customer message and its answer | one `Submission` (`submit()` then `wait()`) |
+| "the old process left nothing half-done" | `harness.inspect()` reporting no unfinished tasks |
+
+## The idea
 
 ```text
-conversation id
-  -> open or create local JSONL Session
-  -> AgentHarness
-  -> lane("main")
-  -> prompt and completed operation
-  -> close process
-
-same session id after restart
-  -> reopen JSONL Session
-  -> recreate AgentHarness
-  -> lane("main")
-  -> follow-up sees the durable transcript
+session id ─▶ storage directory ─▶ Harness.open() ─▶ root() ─▶ submit() / wait() ─▶ close
+                  (on disk, kept)      (rebuilt each start)
 ```
 
-This lab builds on [Lab 05](../lab-05-multi-turn-sessions/README.md)'s two-turn scenario and
-reuses its `get_booking` fixture. It does **not** cover killing the process mid-operation
-(that is [Lab 08](../ROADMAP-PHASE-2.md)), tool replay policy (Lab 09), compaction (Lab 10),
-tree navigation (Lab 11), or any real Teams transport — this lab stays a terminal CLI so
-transport concerns never obscure the persistence boundary being taught here.
+| Thing | Lives in | After a restart |
+| --- | --- | --- |
+| entries, documents, tasks, submissions | the storage files | read back as they were |
+| `Harness`, `Conversation` handle | process memory | created again |
+| tools and system-prompt text | your code (an extension registry) | you install them again |
 
-## Vocabulary (read before predicting)
+Three things to take away:
 
-- **Session** — the durable JSONL store for one conversation's entries. Owns nothing about
-  what is "currently running"; it is a plain, append-only, restartable log.
-- **Entry** — one durable record in a session: a message, a compaction summary, a branch
-  summary, or a custom record. Each has a stable `id`, a `parentId` (the entry it was
-  appended after), and a `seq` (write order).
-- **Branch tip** — the id of the most recent entry on a named branch (this lab only uses
-  `"main"`). It is nothing more exotic than a pointer to the latest entry — the durable
-  equivalent of a Git branch's `HEAD`. Two sessions have two completely separate tips;
-  reopening a session does not move its tip, only reads it.
-- **AgentHarness** — the runtime object you attach to one open `Session` to drive turns
-  against it. It owns model/tool configuration and dispatches to one or more lanes; it is
-  not itself durable state — it is rebuilt fresh from the session every time a process
-  starts.
-- **Lane** — one durable, named execution line within a session (this lab only uses
-  `"main"`). A lane is *not* the same thing as the session: the session is the storage: a
-  lane is a live handle, acquired from a harness, that reads and appends to one branch of
-  that storage and tracks whether an operation is currently running on it.
+1. **A completed transcript survives a clean restart, and the follow-up is answered from it.** No second tool call is made.
+2. **Different session ids never meet.** Each id is its own directory and starts empty.
+3. **"Nothing left unfinished" is a weaker claim than "unfinished work is recoverable."** `inspect()` is empty here
+   because every run finished. Killing a process mid-run is not covered; it is the next lab's job.
 
-## Prerequisites
+Not covered: a crash mid-run, tool replay, compaction, forks, and any Teams transport.
 
-- Node.js 24.5 or newer
-- npm
-- Credentials for a model provider supported by `@earendil-works/pi-ai`
+## The experiment
 
-The default configuration uses DeepSeek V4 Flash through the official DeepSeek API, same as
-every earlier lab.
+Each CLI call is one turn in one process, so running it again is a real restart. Fixture: [`data/bookings.json`](data/bookings.json);
+`BK1001` has two containers.
 
-## API note (revalidated against the pinned version)
+1. Turn 1, new session `conversation-a`: "What are the details for booking BK1001?" (a real tool call).
+2. Turn 2, new process, same session id: "Which container is it using?"
+3. Contrast, new session `conversation-b`: the same follow-up.
 
-This lab pins `@earendil-works/pi-agent-core@0.85.1`, matching the roadmap baseline — but
-that package's own `README.md` does not document `AgentHarness`, `JsonlSessionRepo`, or the
-lane API at all. Everything this lab calls was reverse-engineered from the package's shipped
-`.d.ts` declarations and compiled source under `node_modules/@earendil-works/pi-agent-core/dist/harness/`,
-not from prose documentation. If you revisit this lab against a newer Pi version, re-read
-those declaration files before assuming any signature below still holds:
+## What we measured
 
-- `JsonlSessionRepo` (`harness/session/jsonl/repo.ts`) needs `{ fileSystem, sessionsRoot }`.
-  `fileSystem` can be a `NodeExecutionEnv` (imported from `@earendil-works/pi-agent-core/node`,
-  a separate subpath export) — it implements the required `FileSystem` interface.
-- Sessions are grouped on disk by a `(cwd, id)` pair, not by `id` alone. `cwd` does not have
-  to be the OS directory the CLI happens to run from — `JsonlSessionRepo` resolves whatever
-  string you pass to an absolute path via its own `fileSystem.absolutePath()` and uses
-  *that* as the grouping key. This lab fixes it to one constant (`SESSION_GROUP` in
-  `src/cli.ts`) so a session id resolves consistently no matter which shell directory
-  `npm run agent` is invoked from — at the cost of a verbose, doubly-nested directory name
-  under `session-data/` (see section 5), since the constant gets resolved relative to
-  `sessionsRoot` itself rather than to a real project path.
-- `AgentHarness.create({ session, models, model, tools, systemPrompt }, context)` returns
-  `{ harness, open }`. `open` lists every lane whose last operation was never driven to a
-  terminal result — this lab's scope never leaves one, so it must always come back `[]`
-  here (a non-empty `open` here would mean the previous process crashed mid-turn, which is
-  Lab 08's subject).
-- `harness.lane("main", context)` creates the lane on first call and restores it (tip,
-  configuration) on every later call in the same or a different process — there is no
-  separate "create a lane" step.
-- `lane.prompt(text, images, context)` returns a `Result<OperationResultRecord | SuspendedRun, ...>`.
-  Unwrap `.ok` before trusting `.value`; a `SuspendedRun` (`status: "suspended"`) means the
-  provider deferred its response — not expected from this lab's synchronous tool.
+From one live run on `deepseek/deepseek-flash`:
 
-## 1. Predict before running
+| invocation | session | `entries(before)` | tool call | `entries(after)` | answer |
+| --- | --- | --- | --- | --- | --- |
+| turn 1 | `conversation-a` created | 0 | `get_booking` | 5 | lists both containers |
+| turn 2 (new process) | `conversation-a` reopened | 5 | none | 7 | "uses two containers", both named |
+| contrast | `conversation-b` created | 0 | none | 3 | asks which booking is meant |
 
-Record your predictions in writing before installing dependencies or reading further.
-This lab's recorded prediction (verbatim, from the person doing this lab):
+- **`newestEntry(before)` of turn 2 equals `newestEntry(after)` of turn 1** (both `15`): the newest entry was read from files an
+  exited process wrote. The count alone would not show that.
+- **Turn 2 adds exactly two entries** (a `pi.user`, a `pi.assistant`; ids `16` and `19`). The five from turn 1 are untouched.
+- **Entry ids skip numbers** (`7, 10, 11, 13, 15, 16, 19`): entries, tasks, documents, and submissions draw from one counter. Count
+  the `[Entry]` lines, not the ids. The `seq` on each line of `main.jsonl` is a different number, the commit's position.
+- **`conversation-b` has a `pi.system` entry and turn 2 of `conversation-a` has none**: the system entry holds the prompt and tool
+  declarations and is written only when they change.
+- **The second container, `MSKU7654321`, is on disk in the tool result (turn 1) and in each answer that names it**, which is why turn 2
+  needs no lookup.
 
-> 1. 已完成的消息和 tool 结果都会存活 *(all completed messages and tool results survive)*
-> 2. 不清楚 *(unclear — is a lane the same thing as a session?)*
-> 3. 不明白 branch tip 是什么 *(doesn't yet know what a branch tip is)*
-> 4. 不能 *(a different session cannot see conversation-a's history)*
+The offline tests assert the same on a scripted model: the reopened transcript equals the first process's entries record for
+record; the second request carries the first process's tool result; `get_booking` ran once across both processes; `inspect()` is
+empty on every attach; a provider failure settles `unanswered` and the CLI exits 1.
 
-If you are running this lab yourself, write your own answers to the same four questions
-before continuing:
-
-1. Which completed messages and tool results survive a process restart?
-2. Is a lane the same thing as a session? What is the difference?
-3. How does the branch tip change across the two turns in the live scenario below?
-4. What can a different session (a fresh conversation id) observe from the first one?
-
-Do not skip ahead to section 5 before writing something down, even a guess.
-
-## 2. Install dependencies
+## Run it
 
 ```bash
 cd lab-07-durable-harness-session
 npm install
-cp .env.example .env   # then fill in DEEPSEEK_API_KEY
+cp .env.example .env            # then fill in DEEPSEEK_API_KEY
+npm run check                   # typecheck + 25 offline tests, no model calls
 ```
 
-## 3. Verify the deterministic parts
+Try it by hand (each line is its own process):
 
 ```bash
-npm run check
+npm run agent -- --session try --prompt "What are the details for booking BK1001?"
+npm run agent -- --session try --prompt "Which container is it using?"
+npm run agent -- --session other --prompt "Which container is it using?"
+ls session-data/try                       # main.jsonl plus doc-N.jsonl files
+grep -c MSKU7654321 session-data/try/main.jsonl   # 3: the tool result and the two answers
 ```
 
-This covers the booking repository and harness tool (adapted from Lab 05, note the
-different `AgentHarnessTool.execute` signature), `modelSelectionFromEnvironment`, and —
-the core of this lab's evidence — `tests/durable-harness-session.test.ts`, which drives the
-full `Session -> AgentHarness -> lane` stack deterministically:
+Reading the trace: it is the same run/turn tree as the earlier labs, built from committed events. The model's tool-call request
+(`assistant (tool call) … call=<id> args=<json>`) and Pi running it (`tool_start`/`tool_end`) are separate lines paired by `call=`.
+`[Harness] unfinishedTasks=… unsettledSubmissions=…` is `inspect()` at startup. Do not hand-edit `session-data/`.
 
-- It appends one durable entry with `lane.appendMessage()` (the same durable write a
-  completed LLM turn produces) **without calling any model provider**.
-- It closes the harness (and session), reopens the same session id from disk, reattaches a
-  brand-new `AgentHarness`, and re-acquires `lane("main")`.
-- It asserts the branch tip, the entry, and its `parentId` chain all survived untouched,
-  that reopening did not duplicate the first entry, that continuing appends onto the
-  restored tip, and that `AgentHarness.create()` reports no dangling open operation.
-- A separate test proves a different session id starts with a `null` tip and zero entries
-  even though the first session already has some — cross-session isolation, with no live
-  model involved.
+## Test yourself
 
-`tests/session-store.test.ts` covers the same create/reopen/isolate story one layer lower,
-at the plain `JsonlSessionRepo` level, using `Session.setName()`/`getName()` as a minimal
-durable round-trip probe instead of entries.
+Before running, write down your answers to 1–3; the rest after:
 
-None of this touches the network. The live scenario below is the only part that does.
+1. After a restart, which entries are still there?
+2. What is rebuilt on restart, and what is read back from disk?
+3. What does the second process call to get "the same conversation", and what identifies it?
+4. Why does turn 2 need no `get_booking` call, and which line of the trace shows it?
+5. What does `unfinishedTasks=0` prove here, and what does it not prove?
+6. Why does `conversation-b`'s first turn add a `pi.system` entry and turn 2 of `conversation-a` does not?
 
-## 4. Run the live two-turn scenario
+(No learner prediction has been recorded for this lab.)
 
-Unlike Lab 05, "restart" here is not a contrived extra step — it is simply running the CLI
-again. Each invocation is exactly one turn and one process:
+## Good to know
 
-```bash
-# Turn 1 — new process, new session
-npm run agent -- --session conversation-a --prompt "What are the details for booking BK1001?"
+- **Pins:** `pi-durable`, `pi-ai`, `chord` `1.1.0`. `pi-durable` is marked experimental, so what this lab relies on was read from its
+  types and then observed. Default model `deepseek-flash`.
+- `root({ agent })` applies only when the conversation is created. Reopening with another `PI_MODEL` keeps the stored model.
+- The extension code is never stored. A conversation follows whichever extensions the process installed, so every process that
+  reopens a session installs them again. Not tested here: a process that forgets to.
+- One process owns a storage at a time; there is no cross-process lock. A service that serves many sessions must route one session
+  to one process, and decide how long to keep a `Harness` open. This lab opens and closes it per call.
+- A provider error such as a bad key is not retried: the submission settles `unanswered` with `reason: "model_error"`.
+- `WatchHandle.stop()` does not promise to flush pending events, so the trace waits for the submission's terminal event first, and
+  writes a warning line instead of hanging if it never comes.
+- Provider/connection problems: see [Lab 01](../lab-01-pi-agent-loop/README.md). A stale `PI_MODEL` fails at startup with
+  `Unknown model`; use `deepseek-flash`.
 
-# Turn 2 — a *different* process, same session id: a genuine restart between turns
-npm run agent -- --session conversation-a --prompt "Which container is it using?"
-
-# Contrast — a brand-new session id asked the identical follow-up
-npm run agent -- --session conversation-b --prompt "Which container is it using?"
-```
-
-Actual output from one recorded run (trimmed; entry ids, operation ids, and timestamps are
-unique per run — the shape and the `created`/`reopened`/`fromTip`/`tip` values are what to
-compare against your own run):
-
-`src/harness-trace-logger.ts` renders `harness.events` as an indented run/turn/tool tree —
-`▶`/`◀` mark a span opening and closing, aligned at the same indent — instead of one flat
-`[Harness][sessionId] ...` line per event. `cli.ts`'s own `[Session]`/`[Operation]`/`[Entry]`
-lines (unrelated to the tree) still carry the session id explicitly where it matters.
+## Where things are
 
 ```text
-$ npm run agent -- --session conversation-a --prompt "What are the details for booking BK1001?"
-[Session] id=conversation-a created path=/.../session-data/--...--/2026-09-18T00-38-25-163Z_conversation-a.jsonl
-[Harness] lane=main openOperationsOnAttach=0
-[Lane] tipId(before)=null
-[User][conversation-a] What are the details for booking BK1001?
-▶ run 01a0b1f3-4493-...
-  user      "What are the details for booking BK1001?" entry=01a0b1f3-4493-...
-  ▶ turn 01a0b1f3-4496-...
-    assistant (tool call only, no text) entry=01a0b1f3-4497-...
-    ▶ tool_start get_booking call=call_00_wy4Jp... args={"bookingNo":"BK1001"}
-    ◀ tool_end get_booking status=success
-    toolResult get_booking status=success entry=01a0b1f3-4497-...
-  ◀ turn_end tool_results=1
-  ▶ turn 01a0b1f3-47ca-...
-    [Assistant] entry=01a0b1f3-47cb-... Booking BK1001 details:
-- **Container:** MSKU1234567
-...
-  ◀ turn_end tool_results=0
-◀ run_end status=completed fromTip=null tip=01a0b1f3-47cb-...
-[Operation] operationId=01a0b1f3-4493-... kind=run status=completed fromTip=null tip=01a0b1f3-47cb-...
-[Lane] tipId(after)=01a0b1f3-47cb-...
-[Lane] entries=4
-[Entry] seq=4   id=...a2365967b578 parent=null           type=message role=user
-[Entry] seq=28  id=...a23aebdebef4 parent=...a2365967b578 type=message role=assistant
-[Entry] seq=38  id=...a23e8b3014b5 parent=...a23aebdebef4 type=message role=toolResult toolCallId=call_00_wy4Jp...
-[Entry] seq=116 id=...a2434e9d4757 parent=...a23e8b3014b5 type=message role=assistant
-
-$ npm run agent -- --session conversation-a --prompt "Which container is it using?"
-[Session] id=conversation-a reopened path=/.../same/2026-09-18T00-38-25-163Z_conversation-a.jsonl
-[Harness] lane=main openOperationsOnAttach=0
-[Lane] tipId(before)=01a0b1f3-47cb-...
-[User][conversation-a] Which container is it using?
-▶ run 01a0b1f3-4cd5-...
-  user      "Which container is it using?" entry=01a0b1f3-4cd5-...
-  ▶ turn 01a0b1f3-4cd9-...
-    [Assistant] entry=01a0b1f3-4cd9-... Booking BK1001 uses container MSKU1234567.
-  ◀ turn_end tool_results=0
-◀ run_end status=completed fromTip=01a0b1f3-47cb-... tip=01a0b1f3-4cd9-...
-[Lane] tipId(after)=01a0b1f3-4cd9-...
-[Lane] entries=6
+src/session-store.ts          session id -> storage directory; created or reopened
+src/create-harness.ts         model choice, extension registry, Harness.open() + root()
+src/get-booking-tool.ts       the tool, defined with defineTool()
+src/harness-trace-logger.ts   watchEvents() rendered as a run/turn/tool tree
+src/transcript.ts             all entries of a conversation, oldest first
+src/booking-repository.ts, cli.ts
+data/bookings.json            BK1001 with two containers
+tests/durable-harness-session.test.ts   the core offline proof (close, reopen, follow-up, isolation)
 ```
-
-Notice: `reopened`, not `created`; `[Lane] tipId(before)` on turn 2 is character-for-character
-the same id as `[Lane] tipId(after)` from turn 1 — read from a JSONL file written by a
-*different, already-exited process*; and the model answers **without calling `get_booking`
-again**, purely from the entries that other process wrote. The `entries=` count jumps from
-`4` to `6`, not further — turn 2 added exactly one user entry and one assistant entry, no
-duplicates of turn 1's four.
-
-Finally, `conversation-b`:
-
-```text
-$ npm run agent -- --session conversation-b --prompt "Which container is it using?"
-[Session] id=conversation-b created path=/.../2026-09-18T00-38-28-778Z_conversation-b.jsonl
-[Lane] tipId(before)=null
-▶ run 01a0b1f3-52b0-...
-  user      "Which container is it using?" entry=01a0b1f3-52b0-...
-  ▶ turn 01a0b1f3-52b3-...
-    [Assistant] entry=01a0b1f3-52b4-... I need a booking number to look that up. Which booking are you referring to?
-  ◀ turn_end tool_results=0
-◀ run_end status=completed fromTip=null tip=01a0b1f3-52b4-...
-[Lane] entries=2
-```
-
-`created`, a `null` tip before the turn, and no memory of BK1001 — the contrast case, live,
-not simulated.
-
-## 5. Inspect the JSONL evidence directly
-
-```bash
-find session-data -name '*.jsonl' | sort
-cat session-data/**/*conversation-a*.jsonl
-```
-
-Read the raw lines. The first line is a header (`{"v":4,"kind":"header","id":"conversation-a",...}`);
-every following line is a JSON *array* of one commit's writes — an entry write and, often,
-several accompanying value writes (branch tip, lane config, lane state, operation metadata)
-committed in the same transaction. Confirm by eye — not just from the CLI's own summary —
-that:
-
-- The header's `id` matches `conversation-a`, and its `cwd` is an absolute path resolved
-  from this lab's `SESSION_GROUP` constant — not the shell directory you happened to run
-  `npm run agent` from.
-- Every message entry from turn 1 is still present after turn 2 ran in a new process.
-- No entry from turn 1 is duplicated.
-- `conversation-a` and `conversation-b` are two entirely separate files.
-- Entry `seq` numbers are **not** contiguous (`4, 28, 38, 124, ...` in the recorded run
-  above) and do not start at `0` or `1`. `seq` is the commit's position in one shared
-  sequence across *every* write to the session — entries and non-entry value writes
-  (`pi.branch.tip`, `pi.lane.config`, `pi.op.meta`, `pi.op.state`, and more) all draw from
-  the same counter. Do not read `seq` as an entry count or a turn count.
-
-Do not hand-edit these files. If you need to reset a session for a fresh run, delete
-`session-data/` and start over — it is ignored by Git and treated as regenerable evidence,
-not source.
-
-## 6. Explain the trace
-
-Answer using your own terminal output and JSONL files:
-
-1. Which single field in the CLI's `[Session]` line tells you whether this run recovered an
-   existing session or started a new one? Where does that fact ultimately come from —
-   process memory, or the filesystem?
-2. Is `AgentHarness` durable state, or is it rebuilt every time? What in the code (not the
-   JSONL file) proves your answer?
-3. What was `openOperationsOnAttach` on every invocation in this lab, and why does the
-   roadmap say it must be? What would make it non-empty (you don't need to produce that
-   case — that's Lab 08)?
-4. Compare `tipId(after)` from turn 1 to `tipId(before)` on turn 2. What does that equality
-   prove that reading the JSONL file's entry *count* alone would not?
-5. Was your original prediction about "lane vs. session" and "branch tip" right? Write the
-   corrected explanation in your own words now that you have evidence.
-
-## Completion criteria
-
-- `npm run check` passes: booking repository, harness tool, `modelSelectionFromEnvironment`,
-  the `JsonlSessionRepo` lifecycle tests, and the full `Session -> AgentHarness -> lane`
-  durability test.
-- A completed transcript (turn 1) survives a clean process restart and is visible to turn 2
-  without re-calling `get_booking`.
-- Reopening a session never duplicates a user, assistant, or tool-result entry — verified
-  both by the deterministic test and by inspecting the raw JSONL file.
-- A different session id (`conversation-b`) starts with a `null` tip and zero entries, and
-  cannot answer the follow-up without asking which booking is meant.
-- `AgentHarness.create()` reports `open: []` on every reattachment in this lab — evidence
-  that a *completed* transcript is not the same claim as "in-flight work is recoverable"
-  (that stronger claim is Lab 08's, not this lab's).
-- You can state, from evidence rather than guessing, the difference between conversation
-  identity (the session id string), session identity (the JSONL file), lane identity (the
-  named execution line within it), and operation identity (one `lane.prompt()` call's
-  result record).
-
-## Project map
-
-```text
-src/booking-repository.ts     Lab 05's fixture repository (own copy)
-src/get-booking-tool.ts       Harness-flavored tool — different execute() signature from
-                               the plain Agent tool used in Labs 01/04/05/06
-src/session-store.ts          JsonlSessionRepo wiring + create-or-reopen-by-id helper
-src/create-harness.ts         Model selection + AgentHarness.create() + lane("main")
-src/harness-trace-logger.ts   Indented run/turn/tool tree logger over harness.events
-src/cli.ts                    One CLI invocation = one turn against one named session
-data/bookings.json            Same fixture as Lab 05
-session-data/                 Durable JSONL sessions this lab writes (git-ignored, local evidence)
-tests/                        Deterministic tests — no network calls anywhere
-```
-
-## Troubleshooting
-
-See [Lab 01](../lab-01-pi-agent-loop/README.md) for model/provider connection issues — they
-apply unchanged here, including the `--use-env-proxy` requirement baked into `npm run agent`.
-
-If `npm run agent` reports `Session is already open`, a previous invocation's process is
-still alive (or crashed without releasing its handle) — Lab 07's scope assumes clean exits;
-Lab 08 is where an unclean exit becomes the subject of study.

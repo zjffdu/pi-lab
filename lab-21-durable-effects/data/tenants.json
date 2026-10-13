@@ -1,0 +1,214 @@
+{
+  "principals": [
+    {
+      "tenantId": "tenant-a",
+      "subject": "alice",
+      "roles": [
+        "operator"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "bob",
+      "roles": [
+        "approver"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "carol",
+      "roles": [
+        "viewer"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "dave",
+      "roles": [
+        "operator",
+        "approver"
+      ]
+    },
+    {
+      "tenantId": "tenant-b",
+      "subject": "erin",
+      "roles": [
+        "operator"
+      ]
+    },
+    {
+      "tenantId": "tenant-b",
+      "subject": "frank",
+      "roles": [
+        "approver"
+      ]
+    }
+  ],
+  "bookings": [
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK1001",
+      "containerNo": "MSKU1111111",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK2001",
+      "containerNo": "MSKU1222222",
+      "origin": "SGSIN",
+      "destination": "USLAX",
+      "vessel": "ALPHA SECOND",
+      "plannedDeparture": "2026-09-12",
+      "plannedArrival": "2026-10-02",
+      "status": "in_transit"
+    },
+    {
+      "tenantId": "tenant-b",
+      "bookingNo": "BK1001",
+      "containerNo": "TCLU9999999",
+      "origin": "DEHAM",
+      "destination": "USNYC",
+      "vessel": "BRAVO VOYAGER",
+      "plannedDeparture": "2026-08-01",
+      "plannedArrival": "2026-08-28",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3001",
+      "containerNo": "MSKU3001000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3002",
+      "containerNo": "MSKU3002000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3003",
+      "containerNo": "MSKU3003000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3004",
+      "containerNo": "MSKU3004000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3005",
+      "containerNo": "MSKU3005000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3006",
+      "containerNo": "MSKU3006000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3007",
+      "containerNo": "MSKU3007000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3008",
+      "containerNo": "MSKU3008000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3009",
+      "containerNo": "MSKU3009000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3010",
+      "containerNo": "MSKU3010000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3011",
+      "containerNo": "MSKU3011000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK3012",
+      "containerNo": "MSKU3012000",
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    }
+  ]
+}

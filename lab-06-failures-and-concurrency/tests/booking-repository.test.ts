@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { BookingRepository } from "../src/booking-repository.js";
+import { BookingRepository, isBooking } from "../src/booking-repository.js";
 
 describe("BookingRepository", () => {
   const repository = BookingRepository.fromDefaultFixture();
@@ -8,7 +8,7 @@ describe("BookingRepository", () => {
   it("returns the fixture booking by its exact booking number", () => {
     expect(repository.findByBookingNo("BK1001")).toEqual({
       bookingNo: "BK1001",
-      containerNo: "MSKU1234567",
+      containerNos: ["MSKU1234567", "MSKU2345678"],
       origin: "CNSHA",
       destination: "NLRTM",
       vessel: "MAERSK TEST",
@@ -17,7 +17,35 @@ describe("BookingRepository", () => {
     });
   });
 
+  it("keeps every container of a multi-container booking, and allows a single-container booking", () => {
+    expect(repository.findByBookingNo("BK1001")?.containerNos).toHaveLength(2);
+    expect(repository.findByBookingNo("BK1002")?.containerNos).toEqual(["MSKU7654321"]);
+  });
+
   it("returns undefined for an unknown booking", () => {
     expect(repository.findByBookingNo("BAD_ID")).toBeUndefined();
+  });
+
+  const base = {
+    bookingNo: "BK2000",
+    origin: "CNSHA",
+    destination: "NLRTM",
+    vessel: "V",
+    plannedDeparture: "2026-09-10T08:00:00Z",
+    plannedArrival: "2026-10-15T00:00:00Z",
+  };
+
+  it("accepts a booking with one or many containers", () => {
+    expect(isBooking({ ...base, containerNos: ["MSKU1234567"] })).toBe(true);
+    expect(isBooking({ ...base, containerNos: ["MSKU1234567", "MSKU2345678"] })).toBe(true);
+  });
+
+  it("rejects a booking whose containers are missing, empty, or not strings", () => {
+    expect(isBooking(base)).toBe(false);
+    expect(isBooking({ ...base, containerNos: [] })).toBe(false);
+    expect(isBooking({ ...base, containerNos: "MSKU1234567" })).toBe(false);
+    expect(isBooking({ ...base, containerNos: [42] })).toBe(false);
+    expect(isBooking({ ...base, containerNos: [""] })).toBe(false);
+    expect(isBooking({ ...base, containerNo: "MSKU1234567" })).toBe(false);
   });
 });

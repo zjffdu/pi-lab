@@ -4,7 +4,9 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-import { parseCheckpointName } from "../src/checkpoint.js";
+import { CHECKPOINT_PREFIX, parseCheckpointName } from "../src/checkpoint.js";
+
+const field = (line: string, name: string): string | undefined => new RegExp(`${name}=(\\S+)`).exec(line)?.[1];
 
 /**
  * The deterministic parent test harness the roadmap requires for Lab 08's failure
@@ -15,9 +17,9 @@ import { parseCheckpointName } from "../src/checkpoint.js";
  * durable, before its outcome is committed.
  *
  * Three child processes, three separate `npm run agent` invocations would run as:
- *   1. --prompt "..."  -> killed mid-flight at the checkpoint
- *   2. --resume        -> should discover the open operation and settle it
- *   3. --resume        -> should report NothingToResume, not repeat any work
+ *   1. --prompt "..."       -> killed mid-flight at the checkpoint
+ *   2. --resume             -> inspects what was left behind, then settles the submission
+ *   3. --resume --settled   -> nothing left to resume; re-reads the stored settled record
  */
 
 const CLI_PATH = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -65,6 +67,9 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
+const countKind = (lines: string[], kind: string): number =>
+  lines.filter((line) => line.startsWith("[Entry][after]") && line.includes(`kind=${kind}`)).length;
+
 async function main(): Promise<void> {
   const sessionFlagIndex = process.argv.indexOf("--session");
   const sessionId =
@@ -72,65 +77,83 @@ async function main(): Promise<void> {
       ? (process.argv[sessionFlagIndex + 1] as string)
       : `crash-demo-${Date.now()}`;
 
-  const env = {
-    ...process.env,
-    SLOW_TOOL_DELAY_MS: process.env.SLOW_TOOL_DELAY_MS ?? "15000",
-  };
+  // The first child sleeps long inside the tool; the resumed children only need the delay to be short
+  // in case the model asks for the lookup again after the interrupted one.
+  const killEnv = { ...process.env, SLOW_TOOL_DELAY_MS: process.env.SLOW_TOOL_DELAY_MS ?? "15000" };
+  const resumeEnv = { ...process.env, SLOW_TOOL_DELAY_MS: "500" };
 
   console.log(`\n=== Step 1: start a turn that will be killed mid-flight (session=${sessionId}) ===`);
   const turn1 = await runChild(
     ["--session", sessionId, "--prompt", "What are the movement events for container MSKU1234567?"],
-    env,
+    killEnv,
     (line) => (parseCheckpointName(line) === "tool_dispatched" ? "kill-now" : "keep-going"),
   );
   console.log(`[demo] turn 1 exited: code=${turn1.exitCode ?? "null"} signal=${turn1.signal ?? "null"}`);
   assert(turn1.signal === "SIGKILL", "turn 1 should have been killed by SIGKILL at the checkpoint");
+  const checkpoint = turn1.lines.find((line) => parseCheckpointName(line) === "tool_dispatched");
+  assert(checkpoint !== undefined, "turn 1 should have printed the tool_dispatched checkpoint before being killed");
+  const killedTaskId = field(checkpoint as string, "taskId");
+  const killedCallId = field(checkpoint as string, "callId");
+  const submissionId = field(turn1.lines.find((line) => line.startsWith("[Submission] admitted")) ?? "", "id");
+  assert(killedTaskId !== undefined && killedCallId !== undefined, "the checkpoint line must carry taskId and callId");
+  assert(submissionId !== undefined, "turn 1 must have printed the admitted submission id before being killed");
+  // The CLI prints `[Submission] id=... status=...` only after submission.wait() resolves, which a
+  // process killed mid-tool never reaches.
   assert(
-    turn1.lines.some((line) => parseCheckpointName(line) === "tool_dispatched"),
-    "turn 1 should have printed the tool_dispatched checkpoint before being killed",
-  );
-  // A model may emit interstitial assistant text alongside its tool call (e.g. "I'll look
-  // that up.") before the checkpoint — that is not a final answer. What must never appear
-  // is the CLI's own terminal "[Operation] operationId=..." line, which logResult() only
-  // prints after prompt() has resolved — impossible for a process that was SIGKILLed first.
-  assert(
-    !turn1.lines.some((line) => line.startsWith("[Operation] operationId=")),
-    "turn 1 must not have reached a terminal operation result — it was killed before the tool settled",
+    !turn1.lines.some((line) => line.startsWith("[Submission] id=")),
+    "turn 1 must not have reached a settled submission: it was killed before the tool settled",
   );
 
-  console.log(`\n=== Step 2: reopen and resume the interrupted operation (session=${sessionId}) ===`);
-  const resume1 = await runChild(["--session", sessionId, "--resume"], env, () => "keep-going");
+  console.log(`\n=== Step 2: reopen, inspect, then resume (session=${sessionId}) ===`);
+  const resume1 = await runChild(["--session", sessionId, "--resume"], resumeEnv, () => "keep-going");
   console.log(`[demo] resume 1 exited: code=${resume1.exitCode ?? "null"} signal=${resume1.signal ?? "null"}`);
-  assert(resume1.exitCode === 0, "first resume should exit cleanly and settle the operation");
+  assert(resume1.exitCode === 0, "first resume should exit cleanly once the submission settles");
   assert(
-    resume1.lines.some((line) => /^\[Harness\] lane=main OPEN operation=/.test(line)),
-    "first resume should have discovered exactly the operation that was interrupted",
+    resume1.lines.some((line) => /^\[Harness\] scheduling=paused unfinishedTasks=[1-9]\d* unsettledSubmissions=1$/.test(line)),
+    "first resume should find unfinished tasks and exactly one unsettled submission, with scheduling still paused",
   );
   assert(
-    resume1.lines.some((line) => line.startsWith("[Resume] operationId=") && line.includes("status=completed")),
-    "first resume should drive the open operation to a completed terminal result",
+    resume1.lines.some((line) => line.startsWith("[Harness] UNFINISHED task=") && line.includes(`task=${killedTaskId} `)),
+    `the unfinished tool task reported by inspect() should be the one that was killed (task=${killedTaskId})`,
   );
   assert(
-    resume1.lines.some((line) => line.includes("[Assistant]")),
-    "first resume should eventually produce the final assistant answer",
+    resume1.lines.some((line) => line.startsWith("[Harness] UNSETTLED submission=") && line.includes(`submission=${submissionId} `)),
+    `the unsettled submission reported by inspect() should be the one turn 1 admitted (submission=${submissionId})`,
   );
+  assert(
+    resume1.lines.some((line) => line.startsWith("[Resume] submission=") && line.includes("status=done")),
+    "first resume should drive the submission to status=done",
+  );
+  // The interrupted call must not run again. The model may still ask for a *new* lookup after seeing
+  // the interrupted result; that would be a different callId, a new call and not a replay.
+  assert(
+    !resume1.lines.some((line) => parseCheckpointName(line) === "tool_dispatched" && line.includes(`callId=${killedCallId} `)),
+    `the interrupted call ${killedCallId} must not be executed again`,
+  );
+  assert(countKind(resume1.lines, "pi.user") === 1, "recovery must not append a second user prompt");
+  const afterResume1 = resume1.lines.find((line) => line.startsWith("[Conversation] entries(after)="));
 
   console.log(`\n=== Step 3: resume again after settlement (session=${sessionId}) ===`);
-  const resume2 = await runChild(["--session", sessionId, "--resume"], env, () => "keep-going");
+  const resume2 = await runChild(["--session", sessionId, "--resume", "--settled"], resumeEnv, () => "keep-going");
   console.log(`[demo] resume 2 exited: code=${resume2.exitCode ?? "null"} signal=${resume2.signal ?? "null"}`);
-  assert(resume2.exitCode === 0, "a resume call after settlement is an expected outcome, not a CLI failure");
+  assert(resume2.exitCode === 0, "re-reading a settled submission is an expected outcome, not a CLI failure");
   assert(
-    resume2.lines.some((line) => /^\[Harness\] lane=main openOperationsOnAttach=0$/.test(line)),
-    "second resume should find no open operation left",
+    resume2.lines.some((line) => /^\[Harness\] scheduling=paused unfinishedTasks=0 unsettledSubmissions=0$/.test(line)),
+    "second resume should find nothing unfinished and nothing unsettled",
   );
   assert(
-    resume2.lines.some((line) => line.includes("[Resume] rejected: NothingToResume")),
-    "second resume should report NothingToResume explicitly rather than silently repeating work",
+    resume2.lines.some((line) => line.startsWith("[Resume] submission=") && line.includes("status=done")),
+    "re-reading the settled submission should return the stored status=done record",
   );
   assert(
-    !resume2.lines.some((line) => line.includes("tool_dispatched")),
-    "second resume must not re-invoke the slow tool",
+    !resume2.lines.some((line) => line.startsWith(CHECKPOINT_PREFIX)),
+    "the second resume must not execute any tool",
   );
+  assert(
+    resume2.lines.find((line) => line.startsWith("[Conversation] entries(after)=")) === afterResume1,
+    "the second resume must not add entries: entry count and newest entry stay what the first resume left",
+  );
+  assert(countKind(resume2.lines, "pi.user") === 1, "exactly one user prompt exists in the whole session");
 
   console.log("\n=== All Lab 08 crash-recovery assertions passed ===");
 }

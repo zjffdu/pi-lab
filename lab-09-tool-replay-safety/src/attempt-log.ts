@@ -5,15 +5,17 @@ import { dirname } from "node:path";
  * One real call to a tool's `execute()`, independent of anything the harness itself
  * durably records. This is the lab's answer to "count actual tool executions separately
  * from committed tool-result entries": the harness's own JSONL may show only one committed
- * `toolResult` entry for a logical call even though `execute()` ran twice (a "safe"-replay
- * recovery), or it may show a synthesized error result for a call whose `execute()` only
- * ever ran once (a "never"-replay interruption). Neither fact is visible from the JSONL
+ * `pi.tool-result` entry for a logical call even though `execute()` ran twice (a `"safe"`
+ * replay), or it may show a synthesized error result for a call whose `execute()` only ever
+ * ran once (an `"unsafe"` interruption). Neither fact is visible from the JSONL
  * alone — this file is what makes it visible.
  */
 export interface ToolAttempt {
   tool: string;
-  toolCallId: string;
-  invocationId: string;
+  /** The model's call id: what the model asked for. */
+  callId: string;
+  /** The `pi.tool` task id: the one logical call Pi tracks. A replay keeps both ids. */
+  taskId: string;
   detail: string;
   at: number;
 }

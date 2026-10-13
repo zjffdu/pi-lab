@@ -1,441 +1,159 @@
 # Lab 09 — Tool Replay Safety
 
-Lab 08 killed a process mid tool-call and showed that `resume()` never repeats the call —
-it synthesizes an explicit `isError: true` result instead. That lab's fixture tool never
-declared its own replay policy, so it only ever exercised Pi's *default*. This lab makes the
-policy an explicit, contrasted choice: one read-only tool that opts into `replay: "safe"`
-(recovery may genuinely re-run it), and one state-changing tool that stays `replay: "never"`
-(recovery must not). Both get killed mid-flight, on purpose, at a different named checkpoint
-each — and this lab counts, with local evidence Pi itself never sees, exactly how many times
-each tool's `execute()` actually ran.
+English | [中文](README.zh-CN.md)
 
-## Learning objective
+**Question:** when a process dies after a tool call may already have changed something, may Pi run that tool again?
+**Answer this lab shows:** it depends on one word the tool author declares, and Pi trusts it without checking.
 
-By the end of this lab, you can explain this from your own console output and evidence files:
+- **`replay: "safe"`** — recovery runs `execute()` again. The call keeps its task id and call id, and one real result is committed.
+- **`replay: "unsafe"`** (the default) — recovery does not enter `execute()`. It commits an `interrupted` error result instead.
+
+`"unsafe"` protects you from running a call twice. It does not tell you whether the first run happened: `interrupted` means
+*outcome unknown*, not *did not happen*. Think of re-sending a read-only report request versus re-sending a payment: only the
+author knows which one it is, and the label is the author's promise.
+
+## A concrete scenario
+
+An ops assistant can look up container movements and place holds on bookings. At 10:02 a user asks: *"place a hold on
+`BK1001` for customs review and tell me the hold id"*.
+
+| Moment | What happens |
+| --- | --- |
+| 10:02:01 | The model calls `request_booking_hold`. The hold is written to the outbox (the "booking system"). |
+| 10:02:01 | The server is killed before the tool returns, so the user never gets a hold id. |
+| 10:02:30 | The server restarts and resumes the unfinished run. |
+
+What should Pi do with the unfinished call?
+
+- **Run it again** → a second hold for the same request. Harmless for a lookup, wrong for a hold.
+- **Leave it alone** → no duplicate, but nobody knows whether the hold exists, so the assistant must say so and let a human check.
+
+Pi cannot tell which of the two is right, so the tool author declares it:
+
+| In the scenario | In the lab |
+| --- | --- |
+| the lookup of container events | `get_container_events`, `replay: "safe"` |
+| placing a hold | `request_booking_hold`, `replay: "unsafe"`, its effect is one line in the outbox |
+| the booking system | `runtime-evidence/outbox-*.jsonl` |
+| "how many times did the tool really run?" | the attempt log, `runtime-evidence/attempts-*.jsonl` |
+| the author's promise | the `replay` field of the tool definition |
+
+Who needs to understand this? **You, the developer**, when you write a tool. The end user only sees either a real answer or
+"the outcome is unknown, please check".
+
+## The idea
+
+When a call starts, Pi commits its intent (a `pi.tool` task, including the tool's `replay` value) **before** `execute()` runs.
+A killed process leaves that behind. On recovery:
 
 ```text
-durable tool intent
-  -> effect outcome known       -> commit result
-  -> effect outcome unknown
-       -> replay: "safe"        -> recovery calls execute() again, for real
-       -> replay: "never"       -> recovery synthesizes an interrupted result, no re-call
-
-application idempotency
-  !=
-Pi replay policy
+pi.tool task, intent committed, no result
+  ├─ replay "safe"   → execute() runs again: same taskId, same callId → one real pi.tool-result
+  └─ replay "unsafe" → execute() is not entered → an isError "interrupted" pi.tool-result
 ```
 
-This lab extends [Lab 08](../lab-08-crash-recovery/README.md)'s `Session -> AgentHarness ->
-lane("main")` stack with two new tools, replacing Lab 08's single always-`"never"` fixture. It
-does **not** cover real notifications, bookings, or APIs; provider retry policy or HTTP retry
-behavior; exactly-once claims across systems Pi does not control; or production outbox
-delivery and distributed transaction protocols — this lab's only "external side effect" is a
-local, append-only JSON-lines file this lab itself owns and resets.
+Three things to take away:
 
-## Vocabulary (read before predicting)
+1. **A replay is the same call, not a new one.** The two executions share `taskId` and `callId`. If the model asks again
+   after reading an `interrupted` result, that is a *retry* with a new call id, a different thing.
+2. **Pi enforces the declaration; it cannot check that it is true.** An effectful tool wrongly declared `"safe"` is run
+   again and duplicates its effect (an offline test does exactly this).
+3. **`replay` is not idempotency.** Making a repeated effect harmless (an idempotency key, a conditional write) is the tool's own job.
 
-- **Replay policy** (`tool.replay: "never" | "safe"`) — a field on the tool definition
-  itself, not on any one call. `"never"` is the default when a tool leaves it undeclared
-  (this is what Lab 08's fixture tool did). It answers one question only: *if a process dies
-  after this call's durable intent is committed but before its outcome is committed, is it
-  safe for recovery to call `execute()` again?*
-- **Invocation** (`AgentHarnessToolInvocation`) — the harness's own stable identity for one
-  logical tool call: `invocationId`, `operationId`, `turnId`, plus `getMemo`/`setMemo` for
-  invocation-scoped durable bookkeeping. Per its own type comment, `invocationId` is
-  "unchanged during safe replay" — this lab checks that claim directly instead of taking it
-  on faith.
-- **Attempt** (this lab's own vocabulary, not Pi's) — one real call to a tool's `execute()`.
-  `src/attempt-log.ts` records one line per attempt, synchronously, before any `await` inside
-  `execute()` — deliberately independent of anything Pi's own session ever commits. The whole
-  point of this lab is that "attempts" and "committed tool-result entries" can diverge in
-  both directions, and neither one is redundant with the other.
-- **Effect** (this lab's own vocabulary) — one append to `src/outbox-repository.ts`'s local
-  JSON-lines file, written synchronously by `request_booking_hold` the instant its (fake,
-  local) business action has "happened" — before that call's artificial post-effect delay,
-  before its result is committed. This is the file whose entry count either does or does not
-  match its attempt count.
-- **Application idempotency vs. Pi replay policy** — two different layers with two different
-  jobs. Pi's replay policy only decides whether *Pi itself* calls `execute()` a second time.
-  Whether that second call is *safe to have happen twice in the world* is the tool
-  implementation's own responsibility — declaring `replay: "safe"` on a tool whose effect is
-  not naturally idempotent would not make it safe, it would just make Pi duplicate it
-  automatically instead of never touching it again.
+Not covered: real notifications or APIs, provider/HTTP retry, exactly-once across systems Pi does not control. This lab
+never shows exactly-once execution.
 
-## Prerequisites
+## The experiment
 
-- Node.js 24.5 or newer
-- npm
-- Credentials for a model provider supported by `@earendil-works/pi-ai`
+`npm run demo:replay` runs two scenarios against a live model. For each, a parent process starts a child CLI, waits for a named
+`[Checkpoint]` line on its stdout (no sleeps), sends `SIGKILL`, then starts new children to recover:
 
-The default configuration uses DeepSeek V4 Flash through the official DeepSeek API, same as
-every earlier lab.
+| Scenario | Killed at | Why there |
+| --- | --- | --- |
+| `safe`: `get_container_events` | `tool_dispatched` | the call is durable, nothing is committed |
+| `unsafe`: `request_booking_hold` | `effect_appended` | the outbox line already exists, the result is not committed |
 
-## API note (revalidated against the pinned version)
+Then it inspects the session, resumes it, and asks to resume a settled session again. The checkpoint lines carry `taskId` and
+`callId`, so the killed call can be matched to the task `inspect()` reports, the attempt log, and the outbox record.
 
-Same pin as Labs 07-08: `@earendil-works/pi-agent-core@0.85.1`. Reverse-engineered from
-`node_modules/@earendil-works/pi-agent-core/dist/harness/**/*.d.ts` and, for the two branches
-below specifically, from `dist/harness/runtime/drive/tools.js` — the actual recovery
-dispatch, not documented in any `.d.ts`.
+## What we measured
 
-- `AgentTool.replay?: "never" | "safe"` (inherited by `AgentHarnessTool`). Undeclared reads
-  as `"never"` — `tools.js`'s `publishToolIntent(...)` call uses
-  `prepared.cleared.tool.replay ?? "never"` verbatim.
-- On recovery, `recoverToolInvocation(...)` branches on `call.replay === "safe" && tool?.replay
-  === "safe"` (the call's own durably recorded policy **and** the currently loaded tool's
-  policy must agree — not just the tool's).
-  - **`"safe"`**: it clears the call's durable replay checkpoint and calls `execute()` again —
-    a real second invocation, with the *same* `toolCall` object recovered from the durable
-    entries, not a freshly minted one. Only the invocation that finishes writes a committed
-    result.
-  - **Anything else (including undeclared/`"never"`)**: it reads the last durable checkpoint
-    for that call and publishes a synthesized `interruptedOutcome` — `execute()` is never
-    called again. This is exactly Lab 08's finding, restated as the `else` branch of the same
-    function the `"safe"` path lives in.
-- `AgentHarnessToolInvocation.invocationId` is "opaque session-unique id equal to the call's
-  reserved result-entry id" per its own type comment — this lab checks that it is identical
-  across a safe tool's two real attempts, and that it is the value threaded into the local
-  outbox record for the never tool's one attempt.
+From one live run:
 
-## 1. Predict before running
+| tool | replay | executions of the killed call | replays | new calls by the model | outbox effects | committed results | committed result is |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `get_container_events` | safe | 2 | 1 | 0 | 0 | 1 | real result |
+| `request_booking_hold` | unsafe | 1 | 0 | 0 | 1 | 1 | interrupted (`isError`) |
 
-Record your predictions in writing before installing dependencies or reading further. This
-lab's recorded prediction (verbatim, written before section 4 was run):
+- **Safe:** the same `[Checkpoint] tool_dispatched … taskId=12 callId=…` line is printed twice, once per process, because
+  `execute()` really ran twice. Still exactly one result is committed, and it is the real one.
+- **Unsafe:** one execution and one outbox line with the same `taskId` and `callId`. The transcript says the call "was
+  interrupted and may have partially run" while the outbox holds one effect; both are true.
+- **`inspect()` before `resume()`** already shows `replay=safe` or `replay=unsafe` on the unfinished `pi.tool` task, plus its
+  waiting `pi.generation`: the generation owns the tool task and cannot finish before it does.
+- **Neither recovered trace has a `▶ tool_start`:** the event stream carries none for a call a previous process started. You tell
+  the policies apart from the `tool_end` line (`↺ … recovery ran the call again` versus `↺ interrupted …`).
+- **After an `interrupted` result** the model may ask for the hold again with a new call id. That is a retry; Pi does not stop
+  it and neither does this lab. The `new calls by the model` column shows when it happens.
 
-> 1. Under `"safe"` replay, recovery calls the tool again, but the *model* still trusts
->    whatever partial description it saw before the crash instead of the fresh result.
-> 2. Under `"never"` replay, recovery silently retries anyway, because retrying is the safer
->    default when the outcome is unknown.
-> 3. The `invocationId` changes between the two real attempts of the safe tool, because each
->    real `execute()` call is, from the tool's point of view, a new attempt.
-> 4. Preventing a duplicated business effect is entirely the tool implementation's job — Pi
->    itself has no opinion and will call a `"safe"` tool as many times as recovery needs to.
+The offline tests (`tests/replay-recovery.test.ts`) reproduce the kill without killing anything: at each tool's checkpoint they
+copy the session directory, attempt log, and outbox, then recover from the copy with a new `Harness`. They also cover the
+wrongly declared case: the hold tool declared `"safe"` is rerun and its outbox gets **two** records for one call.
 
-Section 4 below runs the real experiment and compares these four answers against what
-actually happened. Do not skip ahead to it before writing your own answer if you are doing
-this lab yourself.
-
-## 2. Install dependencies
+## Run it
 
 ```bash
 cd lab-09-tool-replay-safety
 npm install
-cp .env.example .env   # then fill in DEEPSEEK_API_KEY
+cp .env.example .env     # then fill in DEEPSEEK_API_KEY
+npm run check            # typecheck + 54 offline tests, no model calls
+npm run demo:replay      # the live experiment above
 ```
 
-## 3. Verify the deterministic parts
+Try it by hand:
 
 ```bash
-npm run check
+npm run agent -- --session try --prompt "What are the movement events for container MSKU1234567?"
+cat runtime-evidence/attempts.jsonl                  # one line: one real execution
+grep -c 'pi.tool-result' session-data/try/main.jsonl # 1
+npm run agent -- --session try --resume --settled    # re-reading a settled submission runs nothing
 ```
 
-This is `tsc --noEmit` plus Vitest across the booking and container-event repositories, the
-checkpoint format, the local attempt-log and outbox fixtures, both harness tools (including
-the checkpoint-ordering tests below), model/delay/evidence-path environment parsing, session
-lifecycle, and the Lab-07/08-style deterministic durability test.
+`SAFE_TOOL_DELAY_MS` and `HOLD_TOOL_DELAY_MS` (default 8000) set how long each tool waits after starting; the demo uses 15000.
+Do not hand-edit `session-data/` or `runtime-evidence/` (git-ignored, regenerable).
 
-Two tests are worth reading closely:
+## Test yourself
 
-- `tests/get-container-events-safe-tool.test.ts`'s ordering test proves the dispatch
-  checkpoint and the attempt-log write both happen **synchronously**, before `execute()`'s
-  returned promise can possibly have settled — the same premise Lab 08 proved for its own
-  slow tool.
-- `tests/request-booking-hold-tool.test.ts`'s ordering test proves a stricter sequence: the
-  outbox append happens *before* the `effect_appended` checkpoint, which happens *before* the
-  post-effect delay resolves. This is the exact window the failure injection below kills
-  inside — after the effect is durable on disk, before Pi's result is committed.
+Before running the demo, write down your answers to 1–3; the rest after:
 
-Everything in this section is model-free and network-free. Nothing here spawns a process or
-kills one — that is `scripts/replay-safety-demo.ts`, next.
+1. After a kill, what does a tool that declares `"safe"` do on recovery, and what does one that declares `"unsafe"` do?
+2. Which two ids show that a replay is one logical call and not two?
+3. Where would you look to count how many times a tool really ran, and why is Pi's own session not enough?
+4. `interrupted` and one outbox record appear together. Are they in conflict? What does `interrupted` promise?
+5. A hold tool is wrongly declared `"safe"`. Who made the mistake, and which layer should have prevented the duplicate?
+6. The model asks for the hold again with a new call id. Is that a replay? Which layer must stop it?
 
-## 4. Run the replay-safety demo (live evidence)
+(No learner prediction has been recorded for this lab.)
 
-```bash
-npm run demo:replay
-```
+## Good to know
 
-Two independent scenarios run back to back, each its own fresh session id and its own fresh
-local evidence files under `runtime-evidence/`:
+- **Pins:** `pi-durable`, `pi-ai`, `chord` `1.1.0` (`pi-durable` is experimental, so this was read from its types and `dist` and then observed). Default model `deepseek-flash`.
+- An omitted `replay` means `"unsafe"`. The lab declares it explicitly on the hold tool so the contrast is visible.
+- Recovery reruns a call only when the policy stored with the intent **and** the installed tool both say `"safe"`. That second
+  condition was read from `dist/harness/tool.js`, and `tests/replay-recovery.test.ts` pins both directions (safe at crash and unsafe at recovery, and the reverse).
+- `execute(args, api, context)` has no invocation id: a logical call is `api.taskId` plus `api.callId`. `api.memo` exists but is not used, since a memo would not make an external effect idempotent.
+- `resume()` returns nothing, and resuming an already settled session returns its stored record instead of an error.
+- Two processes on one session id are unsupported: `pi-durable` does not lock a storage across processes.
+- Provider/connection problems: see [Lab 01](../lab-01-pi-agent-loop/README.md). If the demo hangs without a checkpoint, the model did not call the tool; rerun.
 
-- **Safe scenario** — prompts for `get_container_events`, kills the child the instant it sees
-  `[Checkpoint] tool_dispatched ... tool=get_container_events` (same moment Lab 08 killed at),
-  then resumes twice.
-- **Never scenario** — prompts `request_booking_hold`, kills the child the instant it sees
-  `[Checkpoint] effect_appended ... tool=request_booking_hold` — deliberately later than
-  dispatch, because this tool's interesting failure window opens only after its local effect
-  is already durable — then resumes twice.
-
-Actual output from one recorded run (trimmed to the load-bearing lines; ids are unique per
-run — the shape, the `↺` recovery markers, and the checkpoint ordering are what to compare
-against your own run):
-
-The trace logger (`src/harness-trace-logger.ts`) renders the event stream as an indented
-run/turn/tool tree instead of one flat line per event — `▶`/`◀` mark a span opening/closing
-(aligned at the same indent, bracket-style), `↺` marks an event fired while the harness is
-*catching up* to durable state during recovery rather than producing it live. The tree shape
-is itself evidence: notice the safe scenario's recovery block contains a `↺ ▶ tool_start`
-(a real second dispatch) while the never scenario's jumps straight from `↺ ▶ turn` to a
-`↺ ◀ tool_end` with **no** `↺ ▶ tool_start` in between — recovery never dispatched it again.
+## Where things are
 
 ```text
-########## Scenario: safe replay (get_container_events) ##########
-
-=== Step 1: start a turn that will be killed mid-flight ===
-[child:stdout] [Harness] lane=main openOperationsOnAttach=0
-[child:stdout] ▶ run 01a0aff8-2716-...
-[child:stdout]   user      "What are the movement events for container MSKU1234567?" entry=01a0aff8-2716-...
-[child:stdout]   ▶ turn 01a0aff8-2719-...
-[child:stdout]     [Assistant] entry=01a0aff8-271a-... I'll look up the movement events for that container.
-[child:stdout]     ▶ tool_start get_container_events call=call_00_7IDlo... args={"containerNo":"MSKU1234567"}
-[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_7IDlo... tool=get_container_events containerNo=MSKU1234567
-[demo] turn 1 exited: code=null signal=SIGKILL
-
-=== Step 2: reopen and resume the interrupted operation ===
-[child:stdout] [Harness] lane=main openOperationsOnAttach=1
-[child:stdout] [Harness] lane=main OPEN operation=01a0aff8-2716-... kind=run startedAt=...
-[child:stdout] ↺ ▶ turn 01a0aff8-2719-...
-[child:stdout]   ↺ ▶ tool_start get_container_events call=call_00_7IDlo... args={"containerNo":"MSKU1234567"}
-[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_7IDlo... tool=get_container_events containerNo=MSKU1234567
-[child:stdout]   ↺ ◀ tool_end get_container_events status=success
-[child:stdout]   ↺ toolResult get_container_events status=success entry=01a0aff8-271a-...
-[child:stdout] ↺ ◀ turn_end tool_results=1
-[child:stdout] ▶ turn 01a0aff8-65ed-...
-[child:stdout]   [Assistant] entry=01a0aff8-65ef-... Movement events for **MSKU1234567** (oldest first):
-[child:stdout]       | Event | Timestamp (UTC) | Location |
-[child:stdout]       |---|---|---|
-[child:stdout]       | GATE_IN | 2026-09-09 22:15 | CNSHA |
-[child:stdout]       | LOAD | 2026-09-10 14:30 | CNSHA |
-[child:stdout]       | DEPARTURE | 2026-09-10 15:00 | CNSHA |
-[child:stdout]       The container gated in at Shanghai, was loaded, and departed on 2026-09-10.
-[child:stdout] ◀ turn_end tool_results=0
-[child:stdout] ◀ run_end status=completed fromTip=null tip=01a0aff8-65ef-...
-[child:stdout] [Resume] operationId=01a0aff8-2716-... status=completed fromTip=null tip=01a0aff8-65ef-...
-[demo] resume 1 exited: code=0 signal=null
-
-=== Step 3: resume again after settlement ===
-[child:stdout] [Harness] lane=main openOperationsOnAttach=0
-[child:stdout] [Resume] rejected: NothingToResume: Lane "main" has no active operation to resume
-[demo] resume 2 exited: code=0 signal=null
-[demo] safe replay (get_container_events): attempts=2 outbox=0
-
-########## Scenario: never replay (request_booking_hold) ##########
-
-=== Step 1: start a turn that will be killed mid-flight ===
-[child:stdout] ▶ run 01a0aff8-6f60-...
-[child:stdout]   user      "Please place a hold on booking BK1001 for "customs review" and tell me the hold id." entry=01a0aff8-6f60-...
-[child:stdout]   ▶ turn 01a0aff8-6f63-...
-[child:stdout]     [Assistant] entry=01a0aff8-6f63-... I can only place that hold after I have a clear reason
-established in this session — and a bare "customs review" request from you is actually the
-reason you're giving, so let me proceed.
-[child:stdout]     ▶ tool_start request_booking_hold call=call_00_ADG3Y... args={"bookingNo":"BK1001","reason":"customs review"}
-[child:stdout] [Checkpoint] tool_dispatched toolCallId=call_00_ADG3Y... tool=request_booking_hold bookingNo=BK1001
-[child:stdout] [Checkpoint] effect_appended toolCallId=call_00_ADG3Y... tool=request_booking_hold bookingNo=BK1001 holdId=hold-01a0aff8-6f63-...
-[demo] turn 1 exited: code=null signal=SIGKILL
-
-=== Step 2: reopen and resume the interrupted operation ===
-[child:stdout] [Harness] lane=main openOperationsOnAttach=1
-[child:stdout] [Harness] lane=main OPEN operation=01a0aff8-6f60-... kind=run startedAt=...
-[child:stdout] ↺ ▶ turn 01a0aff8-6f63-...
-[child:stdout]   ↺ ◀ tool_end request_booking_hold status=error
-[child:stdout]   ↺ toolResult request_booking_hold status=error entry=01a0aff8-6f63-...
-[child:stdout] ↺ ◀ turn_end tool_results=1
-[child:stdout] ▶ turn 01a0aff8-759c-...
-[child:stdout]   [Assistant] entry=01a0aff8-759d-... The hold request for booking BK1001 ("customs review") was
-interrupted mid-call, so its outcome is unknown. Per procedure I won't retry it, and I can't
-tell you a hold id — no tool result confirming one was ever returned.
-[child:stdout]       To resolve this, check the booking directly before deciding whether a fresh hold request is needed.
-[child:stdout] ◀ turn_end tool_results=0
-[child:stdout] ◀ run_end status=completed fromTip=null tip=01a0aff8-759d-...
-[child:stdout] [Resume] operationId=01a0aff8-6f60-... status=completed fromTip=null tip=01a0aff8-759d-...
-[demo] resume 1 exited: code=0 signal=null
-
-=== Step 3: resume again after settlement ===
-[child:stdout] [Resume] rejected: NothingToResume: Lane "main" has no active operation to resume
-[demo] resume 2 exited: code=0 signal=null
-[demo] never replay (request_booking_hold): attempts=1 outbox=1
-
-########## Evidence summary ##########
-┌─────────┬────────────────────────┬─────────┬──────────┬─────────┬──────────────────┬─────────────────────────────────────────────────────────────────────┐
-│ (index) │ tool                   │ replay  │ attempts │ effects │ committedResults │ note                                                                │
-├─────────┼────────────────────────┼─────────┼──────────┼─────────┼──────────────────┼─────────────────────────────────────────────────────────────────────┤
-│ 0       │ 'get_container_events' │ 'safe'  │ 2        │ 0       │ 1                │ 're-invoked once on recovery; only 1 result ever commits'           │
-│ 1       │ 'request_booking_hold' │ 'never' │ 1        │ 1       │ 1                │ 'recovery synthesizes an interrupted result instead of re-invoking' │
-└─────────┴────────────────────────┴─────────┴──────────┴─────────┴──────────────────┴─────────────────────────────────────────────────────────────────────┘
-
-=== All Lab 09 tool-replay-safety assertions passed ===
+src/get-container-events-safe-tool.ts   replay: "safe": read-only, slow, records every attempt
+src/request-booking-hold-tool.ts        replay: "unsafe": appends to the outbox, then waits
+src/attempt-log.ts, outbox-repository.ts   the count and the effect, kept outside Pi's own JSONL
+src/checkpoint.ts                       marker the tools print and the demo waits for
+src/create-harness.ts, session-store.ts, transcript.ts, cli.ts, harness-trace-logger.ts, booking-repository.ts, container-event-repository.ts
+scripts/replay-safety-demo.ts           kill at each checkpoint, resume, re-read
+tests/replay-recovery.test.ts           the offline proof (disk snapshot at the checkpoint)
 ```
-
-Raw `runtime-evidence/*.jsonl` from that same run:
-
-```text
-attempts-safe.jsonl:
-{"tool":"get_container_events","toolCallId":"call_00_7IDlosf9tnR6oYz6QWDN8880","invocationId":"01a0aff8-271a-7063-80d8-83afc05db405","detail":"MSKU1234567","at":1789658671428}
-{"tool":"get_container_events","toolCallId":"call_00_7IDlosf9tnR6oYz6QWDN8880","invocationId":"01a0aff8-271a-7063-80d8-83afc05db405","detail":"MSKU1234567","at":1789658671938}
-outbox-safe.jsonl: (file does not exist — zero effects)
-
-attempts-never.jsonl:
-{"tool":"request_booking_hold","toolCallId":"call_00_ADG3YA0HA0MS9n7QCDEP7493","invocationId":"01a0aff8-6f63-71df-ac39-cbe0532a0516","detail":"BK1001","at":1789658690515}
-outbox-never.jsonl:
-{"invocationId":"01a0aff8-6f63-71df-ac39-cbe0532a0516","bookingNo":"BK1001","reason":"customs review","holdId":"hold-01a0aff8-6f63-71df-ac39-cbe0532a0516","at":1789658690515}
-```
-
-The two safe-scenario attempts share one `invocationId` and one `toolCallId` — the
-`AgentHarnessToolInvocation.invocationId` type comment's claim ("unchanged during safe
-replay") checked out directly. The never-scenario's single attempt and its one outbox record
-share one `invocationId` too — that shared id is what actually lets you prove, after the
-fact, which attempt produced which effect.
-
-Directly from the session JSONL's `pi.op.state` records (`python3 -m json.tool` on each
-commit line, filtered to `namespace: "pi.op.state"`), both scenarios' tool-call batch entry
-passed through the identical transition shape, differing only in the durable `replay` field:
-
-```text
-safe:  {"status":"planned", ...}
-    -> {"status":"effect_pending","replay":"safe", ...}   <- killed process's last write
-    -> {"status":"outcome_ready", ...}                     <- written by the RESUME process,
-                                                                after a second real execute()
-
-never: {"status":"planned", ...}
-    -> {"status":"effect_pending","replay":"never", ...}  <- killed process's last write
-    -> {"status":"outcome_ready", ...}                     <- written by the RESUME process,
-                                                                with NO second execute() call
-```
-
-### Predictions vs. evidence
-
-| # | Prediction | What actually happened |
-| - | ---------- | ----------------------- |
-| 1 | "the model still trusts whatever partial description it saw before the crash instead of the fresh result" | False, and there was no partial description to trust — the model saw no tool output at all before the crash (it had only just dispatched the call). For the safe tool, the model's final answer used the *fresh*, complete result from the second real `execute()` call — a normal table of movement events, not a hedge. |
-| 2 | "under `\"never\"` replay, recovery silently retries anyway" | False. `attempts-never.jsonl` has exactly one line. The assistant's own recovered answer states this directly, unprompted: *"Per policy, I won't re-run it for this same request, since repeating a state-changing call could create a duplicate hold."* — the model correctly inferred the reason from the synthesized interrupted result, it did not need to be told. |
-| 3 | "the `invocationId` changes between the two real attempts of the safe tool" | False. Both attempt-log lines for the safe tool carry the identical `invocationId` (and the identical `toolCallId`) — recovery reconstitutes and replays the *same* logical call; it does not mint a new one. |
-| 4 | "preventing a duplicated business effect is entirely the tool implementation's job — Pi has no opinion" | Half right, half backwards. Pi *does* have an opinion — it is exactly what `tool.replay` declares, and Pi enforces it (zero re-invocations for `\"never\"`, real re-invocation for `\"safe\"`). What is genuinely the tool implementation's job is making sure that opinion is *true*: `get_container_events` is safe to re-run only because reading twice has no effect on the world. Had `request_booking_hold` been declared `\"safe\"` without being idempotent, Pi would have happily called it — and appended — a second time. |
-
-The corrected mental model: `replay` is Pi's own declared contract with itself, not a hint the
-tool implementation can ignore or override at the effect layer. Getting it right is a joint
-responsibility — Pi enforces whichever policy is declared, but only the tool author knows
-whether the tool's real-world effect can actually tolerate being asked twice.
-
-## 5. Inspect the evidence directly
-
-```bash
-find session-data -name '*.jsonl' | sort
-cat runtime-evidence/attempts-safe.jsonl
-cat runtime-evidence/outbox-safe.jsonl
-cat runtime-evidence/attempts-never.jsonl
-cat runtime-evidence/outbox-never.jsonl
-```
-
-Confirm by eye:
-
-- **`attempts-safe.jsonl` has two lines, `outbox-safe.jsonl` has none.** Both attempt lines
-  share the same `invocationId` and the same `toolCallId` — recovery replayed the one logical
-  call, it did not start a second one. Only one committed `toolResult` entry for that call
-  exists in the session's own JSONL, even though `execute()` genuinely ran twice — this is
-  the gap between "attempts" and "committed results" the roadmap asks you to be able to
-  count.
-- **`attempts-never.jsonl` has exactly one line, `outbox-never.jsonl` has exactly one line,**
-  and they share one `invocationId`. The process was killed *after* the outbox entry already
-  existed on disk; recovery still did not call `execute()` again. The business effect that
-  really happened is on disk exactly once — not because the tool checked for a duplicate, but
-  because Pi never asked it to run twice.
-- **The session JSONL's own `pi.op.state` entry for the never call** ends at
-  `"effect_pending"` with `replay: "never"`, the same shape Lab 08 found — and the entry the
-  *resume* process writes for it is a synthesized `isError: true` `toolResult`, not the real
-  `{"holdId": ..., "status": "requested"}` payload the tool actually returned to nobody (the
-  process was already dead by the time `execute()`'s promise would have settled).
-- **The session JSONL's own `pi.op.state` entry for the safe call**, by contrast, shows the
-  batch call transition through a second `"effect_pending"` -> `"outcome_ready"` cycle after
-  the resume — direct durable evidence of the second real invocation, not just this lab's own
-  attempt log.
-
-Do not hand-edit these files. Delete `session-data/` and `runtime-evidence/` and rerun `npm
-run demo:replay` for a fresh, fully reproducible pair of runs.
-
-## 6. Explain the trace
-
-Answer using your own terminal output and evidence files:
-
-1. Both scenarios print `[Harness] lane=main OPEN operation=...` on their first resume. What
-   is different about what happens *next* for the safe call versus the never call, and where
-   in `tools.js`'s `recoverToolInvocation` does that difference actually get decided?
-2. `attempts-safe.jsonl` has two lines with the same `invocationId`. What would it mean —
-   for correctness, not just for this lab's assertions — if the second attempt instead got a
-   *new* `invocationId`? Which of this lab's tools would that be dangerous for, and why is it
-   not dangerous for the one that actually has it happen?
-3. The never scenario's outbox entry exists *before* the process is killed. Was the booking
-   hold "requested" from the business's point of view at that moment, even though the caller
-   (the assistant, and the user) never received confirmation? What does that imply about
-   `replay: "never"` as a *safety* property versus a *correctness* property?
-4. If `request_booking_hold` were changed to declare `replay: "safe"` without changing its
-   implementation, predict what `outbox-never.jsonl` would look like after the same kill
-   point. Why would that be a bug in the tool's replay declaration, not in Pi's recovery
-   logic?
-5. Was your original prediction right? Write the corrected explanation in your own words,
-   specifically calling out what "safe" turned out to mean (recovery may re-run a call) versus
-   what it did not mean (recovery does not make a tool's own effect idempotent).
-
-## Completion criteria
-
-- `npm run check` passes: repositories, checkpoint format, attempt-log and outbox fixtures,
-  both harness tools (including their checkpoint-ordering tests), environment parsing, and
-  the deterministic durability test.
-- `npm run demo:replay` passes its own assertions on a live run for both scenarios: each first
-  invocation is killed by `SIGKILL` at its own named checkpoint; each first `--resume`
-  discovers exactly its interrupted operation and drives it to `status=completed`; each second
-  `--resume` reports `NothingToResume`.
-- The safe tool's recovery behavior is visible and evidence-backed: `attempts-safe.jsonl` has
-  exactly 2 lines sharing one `invocationId` and one `toolCallId`.
-- The non-replayable tool is not invoked a second time after an unknown outcome:
-  `attempts-never.jsonl` has exactly 1 line.
-- The local outbox contains no duplicated business effect: `outbox-never.jsonl` has exactly 1
-  line, and its `invocationId` matches the single attempt that produced it.
-- You can distinguish replay safety (does Pi call `execute()` again), retry (a provider- or
-  application-level decision this lab never makes), and application idempotency (whether a
-  repeated real-world effect would be safe) as three separate concerns.
-- The README avoids claiming universal exactly-once execution anywhere across the outbox,
-  the session JSONL, or the attempt log.
-
-## Project map
-
-```text
-src/booking-repository.ts              Lab 07/08's fixture repository (own copy)
-src/container-event-repository.ts      Lab 04/08's fixture repository (own copy)
-src/checkpoint.ts                      Shared marker format, extended with a second
-                                        checkpoint name and structured field parsing
-src/attempt-log.ts                     Local, synchronous "execute() really ran" evidence —
-                                        independent of anything Pi itself commits
-src/outbox-repository.ts               Local, synchronous "the business effect really
-                                        happened" evidence — this lab's only side effect
-src/get-container-events-safe-tool.ts  New: read-only, declares replay: "safe"
-src/request-booking-hold-tool.ts       New: state-changing, declares replay: "never",
-                                        effect = one outbox append
-src/session-store.ts                   JsonlSessionRepo wiring + create-or-reopen-by-id
-src/create-harness.ts                  Model selection + both tools + AgentHarness.create()
-src/harness-trace-logger.ts            Indented run/turn/tool tree logger (replaces Lab 08's
-                                        flat one-line-per-event format for readability)
-src/cli.ts                             One invocation = one turn (--prompt) or one resume
-                                        attempt (--resume) against one named session
-scripts/replay-safety-demo.ts          Deterministic parent harness: two scenarios, each
-                                        spawn/watch-checkpoint/SIGKILL/resume/resume/assert
-data/bookings.json                     Same fixture as Lab 05/07/08
-data/container-events.json             Same fixture as Lab 04/08
-session-data/                          Durable JSONL sessions this lab writes (git-ignored)
-runtime-evidence/                      Attempt-log and outbox JSON-lines files this lab
-                                        writes and resets on every demo run (git-ignored)
-tests/                                 Deterministic tests — no network calls anywhere
-```
-
-## Troubleshooting
-
-See [Lab 01](../lab-01-pi-agent-loop/README.md) for model/provider connection issues — they
-apply unchanged here, including the `--use-env-proxy` requirement baked into `npm run agent`
-and `npm run demo:replay`.
-
-If `npm run demo:replay` never sees a scenario's checkpoint and hangs, the model chose not to
-call the expected tool for that scenario's prompt (check the mirrored `[child:stdout]` lines
-for what it called instead) — rerun; the system prompt makes each call close to deterministic
-for its fixed demo prompt, but no live model call is guaranteed word for word.
-
-If a resume step reports `openOperationsOnAttach=0` when you expected `1`, a previous `npm run
-demo:replay` run already resolved that operation under the same session id — the script mints
-a fresh timestamped id on every run, so this should only happen if you re-run a `--resume`
-manually against an old `--session` value.

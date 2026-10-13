@@ -26,24 +26,24 @@ describe("OutboxRepository", () => {
 
   it("creates missing parent directories and appends one JSON line per record", () => {
     const outbox = new OutboxRepository(filePath);
-    outbox.appendSync({ invocationId: "inv-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-inv-1", at: 1 });
+    outbox.appendSync({ taskId: "task-1", callId: "call-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-task-task-1", at: 1 });
 
     expect(outbox.readAll()).toEqual([
-      { invocationId: "inv-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-inv-1", at: 1 },
+      { taskId: "task-1", callId: "call-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-task-task-1", at: 1 },
     ]);
   });
 
   it("never collapses two distinct appends into one record", () => {
     const outbox = new OutboxRepository(filePath);
-    outbox.appendSync({ invocationId: "inv-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-inv-1", at: 1 });
-    outbox.appendSync({ invocationId: "inv-2", bookingNo: "BK1001", reason: "customs review", holdId: "hold-inv-2", at: 2 });
+    outbox.appendSync({ taskId: "task-1", callId: "call-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-task-task-1", at: 1 });
+    outbox.appendSync({ taskId: "task-2", callId: "call-2", bookingNo: "BK1001", reason: "customs review", holdId: "hold-task-task-2", at: 2 });
 
     expect(outbox.readAll()).toHaveLength(2);
   });
 
   it("reset() removes the file, and readAll() reports empty again", () => {
     const outbox = new OutboxRepository(filePath);
-    outbox.appendSync({ invocationId: "inv-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-inv-1", at: 1 });
+    outbox.appendSync({ taskId: "task-1", callId: "call-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-task-task-1", at: 1 });
 
     outbox.reset();
     expect(outbox.readAll()).toEqual([]);

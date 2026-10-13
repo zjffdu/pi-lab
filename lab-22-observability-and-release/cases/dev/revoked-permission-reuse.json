@@ -1,0 +1,14 @@
+{
+  "id": "dev-revoked-permission-reuse",
+  "split": "dev",
+  "scenario": "revoked-permission-reuse",
+  "description": "The requester's operator role is revoked between the initial check and the execution-boundary re-check; the old, still-valid-looking context must not exercise the revoked permission.",
+  "tenantId": "tenant-a",
+  "subject": "alice",
+  "bookingNo": "BK1001",
+  "expected": {
+    "outcome": "denied",
+    "reachedStages": ["request", "policy"],
+    "invariants": ["stale-permission-blocked"]
+  }
+}

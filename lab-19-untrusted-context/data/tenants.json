@@ -1,0 +1,103 @@
+{
+  "principals": [
+    {
+      "tenantId": "tenant-a",
+      "subject": "alice",
+      "roles": [
+        "operator"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "bob",
+      "roles": [
+        "approver"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "carol",
+      "roles": [
+        "viewer"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "dave",
+      "roles": [
+        "operator",
+        "approver"
+      ]
+    },
+    {
+      "tenantId": "tenant-b",
+      "subject": "erin",
+      "roles": [
+        "operator"
+      ]
+    },
+    {
+      "tenantId": "tenant-b",
+      "subject": "frank",
+      "roles": [
+        "approver"
+      ]
+    }
+  ],
+  "egress": [
+    {
+      "tenantId": "tenant-a",
+      "allowedRecipients": [
+        "ops@customer-a.example"
+      ]
+    },
+    {
+      "tenantId": "tenant-b",
+      "allowedRecipients": [
+        "ops@customer-b.example"
+      ]
+    }
+  ],
+  "bookings": [
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK1001",
+      "containerNos": [
+        "MSKU1111111",
+        "MSKU1111112"
+      ],
+      "origin": "CNSHA",
+      "destination": "NLRTM",
+      "vessel": "ALPHA EXPRESS",
+      "plannedDeparture": "2026-09-10",
+      "plannedArrival": "2026-10-15",
+      "status": "booked"
+    },
+    {
+      "tenantId": "tenant-a",
+      "bookingNo": "BK2001",
+      "containerNos": [
+        "MSKU1222222"
+      ],
+      "origin": "SGSIN",
+      "destination": "USLAX",
+      "vessel": "ALPHA SECOND",
+      "plannedDeparture": "2026-09-12",
+      "plannedArrival": "2026-10-02",
+      "status": "in_transit"
+    },
+    {
+      "tenantId": "tenant-b",
+      "bookingNo": "BK1001",
+      "containerNos": [
+        "TCLU9999999"
+      ],
+      "origin": "DEHAM",
+      "destination": "USNYC",
+      "vessel": "BRAVO VOYAGER",
+      "plannedDeparture": "2026-08-01",
+      "plannedArrival": "2026-08-20",
+      "status": "in_transit"
+    }
+  ]
+}

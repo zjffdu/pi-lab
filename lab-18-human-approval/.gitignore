@@ -1,0 +1,9 @@
+node_modules/
+.env
+
+# Durable JSONL sessions and the session registry written by the HTTP server and demo. Treat
+# this as runtime evidence, not source — never hand-edit it, never commit it.
+session-data/
+
+# Evidence manifests and demo output for one learner's run. Same treatment as session-data/.
+runtime-evidence/

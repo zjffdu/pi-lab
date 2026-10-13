@@ -31,8 +31,9 @@ export function createGetBookingTool(
     name: "get_booking",
     label: "Get booking",
     description:
-      "Look up one booking by its exact booking number. Returns containerNo and origin, " +
-      "which are required arguments for get_container_events and get_port_status. Call this first.",
+      "Look up one booking by its exact booking number. A booking can have several containers: " +
+      "returns containerNos (a list) and origin, which are the source of the arguments for " +
+      "get_container_events (one call per container) and get_port_status. Call this first.",
     parameters: getBookingParameters,
     async execute(_toolCallId, params, signal) {
       signal?.throwIfAborted();

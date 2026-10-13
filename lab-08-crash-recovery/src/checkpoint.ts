@@ -1,6 +1,6 @@
 /**
  * Shared marker format between a fixture tool that announces "I have been dispatched, my
- * durable tool-call is already committed" and a parent process watching a child's stdout
+ * durable tool task is already committed" and a parent process watching a child's stdout
  * for that exact moment. This is the "named checkpoint" the roadmap requires instead of an
  * arbitrary wall-clock sleep: the parent never guesses when the child has reached the
  * interesting state, it waits for the child to say so.
@@ -10,8 +10,6 @@ export const CHECKPOINT_PREFIX = "[Checkpoint]";
 
 export interface CheckpointFields {
   name: string;
-  toolCallId: string;
-  tool: string;
   [key: string]: string;
 }
 

@@ -1,55 +1,124 @@
-import { convertToLlm, type AgentMessage, type Context } from "@earendil-works/pi-agent-core";
-import type { Message, TextContent } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
+import { defineExtension, type Extension, GenerationTask, hook } from "@earendil-works/pi-durable";
+
+/** What one provider request looked like, without any text from it. */
+export interface RequestSummary {
+  /** 1-based, per boundary instance. */
+  index: number;
+  messageCount: number;
+  roles: string[];
+}
 
 export interface ProviderBoundaryViolation {
+  request: number;
   messageIndex: number;
-  matchedText: string;
+  role: string;
+  /** Index into the forbidden list, not the forbidden text: a violation record is safe to log. */
+  forbiddenIndex: number;
 }
 
-function isTextContent(block: { type: string }): block is TextContent {
-  return block.type === "text";
+export interface ProviderBoundary {
+  /** Install this in the registry. It selects itself into every conversation that follows the host default. */
+  extension: Extension;
+  /** Adds texts that must never appear in a request. Safe to call between requests; empty strings are ignored. */
+  forbid(...texts: string[]): void;
+  readonly forbiddenCount: number;
+  readonly requests: readonly RequestSummary[];
+  readonly violations: readonly ProviderBoundaryViolation[];
 }
 
-function extractProviderMessageText(message: Message): string {
+export interface ProviderBoundaryOptions {
+  /** Called once per request with counts and roles only. */
+  onRequest?: (summary: RequestSummary) => void;
+}
+
+function plainText(message: Message): string {
   if (typeof message.content === "string") {
     return message.content;
   }
   return message.content
-    .filter(isTextContent)
-    .map((block) => block.text)
-    .join(" ");
+    .map((block) => {
+      switch (block.type) {
+        case "text":
+          return block.text;
+        case "thinking":
+          return block.thinking;
+        case "toolCall":
+          return JSON.stringify(block.arguments);
+        default:
+          return "";
+      }
+    })
+    .join("\n");
 }
 
 /**
- * Wraps the harness's own default `AgentMessage[] -> Message[]` conversion (`convertToLlm`)
- * with one explicit check at the literal last point, inside Pi, before a request payload
- * leaves this process for the model provider — the `toProviderMessages` option in
- * `AgentHarnessOptions`. This function is a *check*, not a corrector: it never edits or drops
- * anything from what `convertToLlm` produced. If sanitization has a bug, this makes that bug
- * loud (via `onViolation`) instead of silently papering over it — the bug belongs in
- * `entry-projectors.ts`, not here.
- *
- * `onViolation` fires once per (message, forbidden substring) match, synchronously, before
- * this function returns — this lab's tests and demo use it to prove the negative
- * ("the internal-only field never reaches the provider") deterministically instead of only
- * eyeballing a transcript.
+ * The text a forbidden string is looked for in. `JSON.stringify` covers every field of the message,
+ * including a system message's sections and a tool call's arguments; the plain text is searched as well
+ * because `JSON.stringify` escapes quotes and newlines, so a forbidden string containing either would
+ * never match its own serialized form.
  */
-export function createGuardedToProviderMessages(
-  forbiddenSubstrings: readonly string[],
-  onViolation: (violation: ProviderBoundaryViolation) => void,
-): (messages: AgentMessage[], context: Context) => Message[] {
-  return (messages: AgentMessage[], _context: Context): Message[] => {
-    const providerMessages = convertToLlm(messages);
+function searchableText(message: Message): string {
+  return `${JSON.stringify(message)}\n${plainText(message)}`;
+}
 
-    providerMessages.forEach((message, messageIndex) => {
-      const text = extractProviderMessageText(message);
-      for (const forbidden of forbiddenSubstrings) {
-        if (text.includes(forbidden)) {
-          onViolation({ messageIndex, matchedText: forbidden });
+/**
+ * The last point before a request leaves is the generation task's `beforeRequest` hook: it sees the final
+ * `Message[]` of every request attempt, including a retry after a crash, and its result applies to that
+ * request only.
+ *
+ * This is a CHECK, never a corrector: it returns `undefined`, so the request goes out exactly as built. If
+ * a forbidden text is found, the bug is in whatever put it into context, and the violation is recorded,
+ * not hidden. It does not block the request either: a hook that throws is reported and the next handler
+ * runs, so it cannot be relied on to stop a request. `beforeRequest` is a generation hook, so it does not
+ * cover the model requests a compaction makes.
+ */
+export function createProviderBoundary(options: ProviderBoundaryOptions = {}): ProviderBoundary {
+  const forbidden: string[] = [];
+  const requests: RequestSummary[] = [];
+  const violations: ProviderBoundaryViolation[] = [];
+
+  const extension = defineExtension({
+    name: "provider-boundary",
+    hooks: [
+      hook(GenerationTask, {
+        beforeRequest: (request) => {
+          const summary: RequestSummary = {
+            index: requests.length + 1,
+            messageCount: request.messages.length,
+            roles: request.messages.map((message) => message.role),
+          };
+          requests.push(summary);
+
+          request.messages.forEach((message, messageIndex) => {
+            const text = searchableText(message);
+            forbidden.forEach((forbiddenText, forbiddenIndex) => {
+              if (text.includes(forbiddenText)) {
+                violations.push({ request: summary.index, messageIndex, role: message.role, forbiddenIndex });
+              }
+            });
+          });
+
+          options.onRequest?.(summary);
+          return undefined;
+        },
+      }),
+    ],
+  });
+
+  return {
+    extension,
+    forbid(...texts) {
+      for (const text of texts) {
+        if (text !== "" && !forbidden.includes(text)) {
+          forbidden.push(text);
         }
       }
-    });
-
-    return providerMessages;
+    },
+    get forbiddenCount() {
+      return forbidden.length;
+    },
+    requests,
+    violations,
   };
 }

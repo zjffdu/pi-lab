@@ -1,0 +1,47 @@
+{
+  "principals": [
+    {
+      "tenantId": "tenant-a",
+      "subject": "alice",
+      "roles": [
+        "operator"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "bob",
+      "roles": [
+        "approver"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "carol",
+      "roles": [
+        "viewer"
+      ]
+    },
+    {
+      "tenantId": "tenant-a",
+      "subject": "dave",
+      "roles": [
+        "operator",
+        "approver"
+      ]
+    },
+    {
+      "tenantId": "tenant-b",
+      "subject": "erin",
+      "roles": [
+        "operator"
+      ]
+    },
+    {
+      "tenantId": "tenant-b",
+      "subject": "frank",
+      "roles": [
+        "approver"
+      ]
+    }
+  ]
+}

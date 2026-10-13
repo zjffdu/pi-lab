@@ -6,19 +6,21 @@ describe("checkpoint format", () => {
   it("round-trips name and fields through format/parse", () => {
     const line = formatCheckpoint({
       name: "effect_appended",
-      toolCallId: "call-1",
       tool: "request_booking_hold",
+      taskId: "12",
+      callId: "call-1",
       bookingNo: "BK1001",
       holdId: "hold-abc",
     });
 
-    expect(line).toBe("[Checkpoint] effect_appended toolCallId=call-1 tool=request_booking_hold bookingNo=BK1001 holdId=hold-abc");
+    expect(line).toBe("[Checkpoint] effect_appended tool=request_booking_hold taskId=12 callId=call-1 bookingNo=BK1001 holdId=hold-abc");
     expect(parseCheckpointName(line)).toBe("effect_appended");
     expect(parseCheckpoint(line)).toEqual({
       name: "effect_appended",
       fields: {
-        toolCallId: "call-1",
         tool: "request_booking_hold",
+        taskId: "12",
+        callId: "call-1",
         bookingNo: "BK1001",
         holdId: "hold-abc",
       },

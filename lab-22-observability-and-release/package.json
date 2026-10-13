@@ -1,0 +1,35 @@
+{
+  "name": "pi-lab-22-observability-and-release-pi-1.1",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.5.0"
+  },
+  "scripts": {
+    "run:dev": "node --import tsx scripts/run-cases.ts dev",
+    "run:held-out": "node --import tsx scripts/run-cases.ts held-out",
+    "trace": "node --import tsx scripts/trace.ts",
+    "evaluate": "node --import tsx scripts/evaluate.ts",
+    "evaluate:live": "node --use-env-proxy --import tsx scripts/evaluate-live.ts",
+    "calibrate": "node --import tsx scripts/calibrate.ts",
+    "release-gate": "node --import tsx scripts/release-gate.ts",
+    "demo:drain": "node --import tsx scripts/drain-demo.ts",
+    "demo:rollback": "node --import tsx scripts/rollback-demo.ts",
+    "check": "npm run typecheck && npm test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "dotenv": "17.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.5.2",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vitest": "4.1.11"
+  }
+}

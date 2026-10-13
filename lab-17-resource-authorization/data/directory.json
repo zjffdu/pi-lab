@@ -1,0 +1,16 @@
+{
+  "principals": [
+    {"tenantId": "tenant-a", "subject": "alice", "roles": ["operator"]},
+    {"tenantId": "tenant-a", "subject": "bob", "roles": ["operator"]},
+    {"tenantId": "tenant-a", "subject": "dave", "roles": ["approver"]},
+    {"tenantId": "tenant-a", "subject": "erin", "roles": ["viewer"]},
+    {"tenantId": "tenant-b", "subject": "carol", "roles": ["operator"]}
+  ],
+  "bookings": [
+    {"tenantId": "tenant-a", "bookingNo": "BK1001", "ownerSubject": "alice", "containerNos": ["MSKU1111111", "MSKU1111112"], "origin": "CNSHA", "destination": "NLRTM", "vessel": "ALPHA EXPRESS", "plannedDeparture": "2026-09-10", "plannedArrival": "2026-10-15", "status": "booked"},
+    {"tenantId": "tenant-a", "bookingNo": "BK2001", "ownerSubject": "bob", "containerNos": ["MSKU1222222"], "origin": "SGSIN", "destination": "USLAX", "vessel": "ALPHA SECOND", "plannedDeparture": "2026-09-12", "plannedArrival": "2026-10-02", "status": "booked"},
+    {"tenantId": "tenant-a", "bookingNo": "BK3001", "ownerSubject": "alice", "containerNos": ["MSKU1333333", "MSKU1333334"], "origin": "HKHKG", "destination": "GBFXT", "vessel": "ALPHA THIRD", "plannedDeparture": "2026-08-20", "plannedArrival": "2026-09-30", "status": "in_transit"},
+    {"tenantId": "tenant-a", "bookingNo": "BK5001", "ownerSubject": "erin", "containerNos": ["MSKU1555555"], "origin": "INNSA", "destination": "AEJEA", "vessel": "ALPHA FIFTH", "plannedDeparture": "2026-09-25", "plannedArrival": "2026-10-05", "status": "booked"},
+    {"tenantId": "tenant-b", "bookingNo": "BK1001", "ownerSubject": "carol", "containerNos": ["TCLU9999999", "TCLU9999998"], "origin": "DEHAM", "destination": "USNYC", "vessel": "BRAVO VOYAGER", "plannedDeparture": "2026-08-01", "plannedArrival": "2026-08-28", "status": "booked"}
+  ]
+}

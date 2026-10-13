@@ -1,0 +1,16 @@
+{
+  "id": "held-delivery-manual-review",
+  "split": "held-out",
+  "scenario": "delivery-response-lost",
+  "description": "An approved change is delivered; the acknowledgement is lost and reconciliation genuinely cannot determine the outcome. The application must say so rather than guess.",
+  "tenantId": "tenant-a",
+  "subject": "dave",
+  "bookingNo": "BK1001",
+  "approver": "bob",
+  "simulate": { "unresolvable": true },
+  "expected": {
+    "outcome": "manual_review",
+    "reachedStages": ["request", "approval", "connector", "retry", "delivery"],
+    "invariants": ["manual-review-is-honest"]
+  }
+}

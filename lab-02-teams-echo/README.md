@@ -1,5 +1,7 @@
 # Lab 02 — Teams Transport, No Agent Yet
 
+English | [中文](README.zh-CN.md)
+
 Build the smallest possible Teams SDK app and prove the transport layer works end to end, before any LLM or Pi agent is involved.
 
 ## Learning objective
@@ -29,6 +31,10 @@ Non-goals for this lab:
 - npm
 
 No API keys or credentials are needed. The app runs with `dangerouslyAllowUnauthenticatedRequests: true`, which is only safe because it talks exclusively to the local Agents Playground on your own machine, never to a real Teams service.
+
+### Pi version
+
+This lab has no Pi dependency, so it is unaffected by the Pi `0.85.1` → `1.1.x` change and needs no Pi-1.1 rebuild. The Pi 1.1 rebuild of the agent loop is [`lab-01-pi-agent-loop-pi-1.1`](../lab-01-pi-agent-loop-pi-1.1/README.md); Pi-backed labs from Lab 03 onward are where the pinned Pi version starts to matter.
 
 ## 1. Predict before running
 

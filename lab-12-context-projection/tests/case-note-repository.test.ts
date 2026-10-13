@@ -19,10 +19,15 @@ describe("CaseNoteRepository", () => {
     expect(repository.findByBookingNo("BK9999")).toEqual([]);
   });
 
-  it("every fixture note's internalOnly field is present and non-empty — the fixture is not testing an already-vacuous case", () => {
+  it("every note carries a non-empty internalOnly value, so the fixture is not testing a vacuous case", () => {
     for (const note of repository.all()) {
-      expect(typeof note.internalOnly).toBe("string");
       expect((note.internalOnly ?? "").length).toBeGreaterThan(0);
+    }
+  });
+
+  it("no internalOnly value appears inside any note's own text", () => {
+    for (const note of repository.all()) {
+      expect(note.text).not.toContain(note.internalOnly ?? "");
     }
   });
 });

@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 
 import { createBookingAgent, modelSelectionFromEnvironment, type ModelSelection } from "./create-agent.js";
 import { createPiTraceLogger, type TraceWriter } from "./pi-trace-logger.js";
@@ -53,12 +53,13 @@ function latestAssistantText(messages: readonly AgentMessage[]): string | undefi
 export function createPiAgentRunner(
   selection: ModelSelection = modelSelectionFromEnvironment(),
   write: TraceWriter = (line) => console.log(line),
+  streamFn?: StreamFn,
 ): AgentRunner {
   return {
     async run({ text, requestId }) {
       let agent;
       try {
-        agent = createBookingAgent(selection);
+        agent = createBookingAgent(selection, streamFn);
       } catch (error) {
         write(`[Pi][req:${requestId}] setup_error ${errorMessageOf(error)}`);
         return { answer: INFRASTRUCTURE_ERROR_ANSWER };

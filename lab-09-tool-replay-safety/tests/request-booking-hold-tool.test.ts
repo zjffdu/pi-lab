@@ -2,23 +2,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AttemptLog } from "../src/attempt-log.js";
 import { BookingRepository } from "../src/booking-repository.js";
 import { OutboxRepository } from "../src/outbox-repository.js";
 import { BookingNotFoundError, createRequestBookingHoldTool } from "../src/request-booking-hold-tool.js";
+import { BACKGROUND_CONTEXT } from "../src/session-store.js";
 
-const onUpdate = vi.fn();
-const toolContext = undefined;
-const invocation = {
-  invocationId: "invocation-1",
-  operationId: "operation-1",
-  turnId: "turn-1",
-  getMemo: vi.fn(),
-  setMemo: vi.fn(),
-};
-const context = { abortSignal: undefined } as never;
+const api = { taskId: 12, callId: "call-1" } as never;
 
 let dir: string;
 let attemptLog: AttemptLog;
@@ -34,12 +26,12 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe("request_booking_hold (never-replay harness tool)", () => {
+describe("request_booking_hold (unsafe-replay pi-durable tool)", () => {
   const bookingRepository = BookingRepository.fromDefaultFixture();
 
-  it("declares replay: \"never\"", () => {
-    const tool = createRequestBookingHoldTool(bookingRepository, outbox, attemptLog, { delayMs: 5 });
-    expect(tool.replay).toBe("never");
+  it('declares replay: "unsafe" explicitly, and only a test can override it', () => {
+    expect(createRequestBookingHoldTool(bookingRepository, outbox, attemptLog, { delayMs: 5 }).replay).toBe("unsafe");
+    expect(createRequestBookingHoldTool(bookingRepository, outbox, attemptLog, { delayMs: 5, replay: "safe" }).replay).toBe("safe");
   });
 
   it("orders dispatch -> outbox append -> effect_appended checkpoint, all before the post-effect delay resolves", async () => {
@@ -50,43 +42,50 @@ describe("request_booking_hold (never-replay harness tool)", () => {
       onEffectAppended: () => events.push("effect_appended"),
     });
 
-    const promise = tool.execute(
-      "call-1",
-      { bookingNo: "BK1001", reason: "customs review" },
-      onUpdate,
-      toolContext,
-      invocation,
-      context,
-    );
+    const promise = tool.execute({ bookingNo: "BK1001", reason: "customs review" }, api, BACKGROUND_CONTEXT);
 
-    // Both the outbox append and the effect_appended checkpoint have already happened
-    // synchronously, before the artificial post-effect delay's promise can have settled.
+    // Both the outbox append and the effect_appended checkpoint have already happened synchronously,
+    // before the artificial post-effect delay's promise can have settled.
     expect(events).toEqual(["dispatch", "effect_appended"]);
     expect(outbox.readAll()).toEqual([
-      { invocationId: "invocation-1", bookingNo: "BK1001", reason: "customs review", holdId: "hold-invocation-1", at: expect.any(Number) },
+      {
+        taskId: "12",
+        callId: "call-1",
+        bookingNo: "BK1001",
+        reason: "customs review",
+        holdId: "hold-task-12",
+        at: expect.any(Number),
+      },
     ]);
     expect(attemptLog.readAll()).toEqual([
-      { tool: "request_booking_hold", toolCallId: "call-1", invocationId: "invocation-1", detail: "BK1001", at: expect.any(Number) },
+      { tool: "request_booking_hold", callId: "call-1", taskId: "12", detail: "BK1001", at: expect.any(Number) },
     ]);
 
     const result = await promise;
-    expect(result.details).toEqual({ bookingNo: "BK1001", holdId: "hold-invocation-1" });
+    expect(result.details).toEqual({ bookingNo: "BK1001", holdId: "hold-task-12" });
   });
 
   it("never appends to the outbox for an unknown booking", async () => {
-    const tool = createRequestBookingHoldTool(bookingRepository, outbox, attemptLog, { delayMs: 5 });
+    const tool = createRequestBookingHoldTool(bookingRepository, outbox, attemptLog, {
+      delayMs: 5,
+      onDispatch: () => {},
+    });
 
-    await expect(
-      tool.execute("call-2", { bookingNo: "BAD_ID", reason: "x" }, onUpdate, toolContext, invocation, context),
-    ).rejects.toEqual(new BookingNotFoundError("BAD_ID"));
+    await expect(tool.execute({ bookingNo: "BAD_ID", reason: "x" }, api, BACKGROUND_CONTEXT)).rejects.toEqual(
+      new BookingNotFoundError("BAD_ID"),
+    );
     expect(outbox.readAll()).toEqual([]);
   });
 
-  it("derives holdId from invocationId, not a locally generated random value", async () => {
-    const tool = createRequestBookingHoldTool(bookingRepository, outbox, attemptLog, { delayMs: 5 });
+  it("derives holdId from the task id, not a locally generated random value", async () => {
+    const tool = createRequestBookingHoldTool(bookingRepository, outbox, attemptLog, {
+      delayMs: 5,
+      onDispatch: () => {},
+      onEffectAppended: () => {},
+    });
 
-    await tool.execute("call-1", { bookingNo: "BK1001", reason: "customs review" }, onUpdate, toolContext, invocation, context);
+    await tool.execute({ bookingNo: "BK1002", reason: "customs review" }, api, BACKGROUND_CONTEXT);
 
-    expect(outbox.readAll()[0]?.holdId).toBe(`hold-${invocation.invocationId}`);
+    expect(outbox.readAll()[0]?.holdId).toBe("hold-task-12");
   });
 });

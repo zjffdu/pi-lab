@@ -176,3 +176,73 @@ describe("createResilienceTraceLogger", () => {
     expect(prefixLengths.size).toBe(1);
   });
 });
+
+describe("createResilienceTraceLogger — assistant messages", () => {
+  const assistantEnd = (message: Record<string, unknown>): AgentEvent =>
+    ({ type: "message_end", message: { role: "assistant", ...message } }) as unknown as AgentEvent;
+
+  function render(...events: AgentEvent[]): string[] {
+    const lines: string[] = [];
+    const log = createResilienceTraceLogger("conversation-a", (line) => lines.push(line.replace(/t=\s*\+\d+\.\d+ms/, "t=T")));
+    log({ type: "agent_start" });
+    log({ type: "turn_start" });
+    for (const event of events) log(event);
+    return lines.slice(2);
+  }
+
+  it("prints a tool-call request with its name, call id, and arguments, separate from tool_start", () => {
+    const lines = render(
+      assistantEnd({
+        content: [{ type: "toolCall", id: "call-1", name: "get_booking", arguments: { bookingNo: "BK1001" } }],
+      }),
+    );
+
+    expect(lines).toEqual([
+      '[conversation-a] t=T turn=1     assistant (tool call) get_booking call=call-1 args={"bookingNo":"BK1001"}',
+    ]);
+  });
+
+  it("prints one line per requested call, in the order the model requested them", () => {
+    const lines = render(
+      assistantEnd({
+        content: [
+          { type: "toolCall", id: "call-a", name: "get_container_events", arguments: { containerNo: "MSKU1234567" } },
+          { type: "toolCall", id: "call-b", name: "get_container_events", arguments: { containerNo: "MSKU2345678" } },
+          { type: "toolCall", id: "call-c", name: "get_port_status", arguments: { portCode: "CNSHA" } },
+        ],
+      }),
+    );
+
+    expect(lines).toEqual([
+      '[conversation-a] t=T turn=1     assistant (tool call) get_container_events call=call-a args={"containerNo":"MSKU1234567"}',
+      '[conversation-a] t=T turn=1     assistant (tool call) get_container_events call=call-b args={"containerNo":"MSKU2345678"}',
+      '[conversation-a] t=T turn=1     assistant (tool call) get_port_status call=call-c args={"portCode":"CNSHA"}',
+    ]);
+  });
+
+  it("prints text and tool calls together instead of letting the text hide the calls", () => {
+    const lines = render(
+      assistantEnd({
+        content: [
+          { type: "text", text: "Checking both containers." },
+          { type: "toolCall", id: "call-a", name: "get_container_events", arguments: { containerNo: "MSKU1234567" } },
+        ],
+      }),
+    );
+
+    expect(lines).toEqual([
+      "[conversation-a] t=T turn=1     [Assistant] Checking both containers.",
+      '[conversation-a] t=T turn=1     assistant (tool call) get_container_events call=call-a args={"containerNo":"MSKU1234567"}',
+    ]);
+  });
+
+  it("prints plain answers, empty messages, and provider errors without any tool-call line", () => {
+    expect(render(assistantEnd({ content: [{ type: "text", text: "final answer" }] }))).toEqual([
+      "[conversation-a] t=T turn=1     [Assistant] final answer",
+    ]);
+    expect(render(assistantEnd({ content: [] }))).toEqual(["[conversation-a] t=T turn=1     assistant (empty)"]);
+    expect(
+      render(assistantEnd({ content: [], stopReason: "error", errorMessage: "401 invalid api key" })),
+    ).toEqual(["[conversation-a] t=T turn=1     assistant (error) 401 invalid api key"]);
+  });
+});

@@ -2,37 +2,56 @@ import "dotenv/config";
 
 import { fileURLToPath } from "node:url";
 
-import type { NavigationResult, RunResult } from "@earendil-works/pi-agent-core";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 
-import { openMainLane } from "./create-harness.js";
-import { attachHarnessTraceLogger } from "./harness-trace-logger.js";
-import { BACKGROUND_CONTEXT, createSessionRepo, openOrCreateSession } from "./session-store.js";
-import { findBranchTips, renderTree } from "./tree-view.js";
-
-/** Fixed grouping key, same role as earlier labs' `SESSION_GROUP` — see `openOrCreateSession`. */
-const SESSION_GROUP = "lab-11-session-tree";
+import { forkAt, loadBranches } from "./branches.js";
+import { modelSelectionFromEnvironment, openHarness } from "./create-harness.js";
+import { attachTraceLogger } from "./harness-trace-logger.js";
+import { readLabels, setLabel } from "./labels.js";
+import { BACKGROUND_CONTEXT, openSessionStorage } from "./session-store.js";
+import { summarizeEntry } from "./transcript.js";
+import { branchTips, describeFork, renderTree } from "./tree-view.js";
 
 const SESSIONS_ROOT = fileURLToPath(new URL("../session-data", import.meta.url));
 
+type Mode =
+  | { kind: "prompt"; prompt: string }
+  | { kind: "fork"; at: EntryId }
+  | { kind: "label"; entryId: EntryId; label: string | undefined }
+  | { kind: "preview"; at: EntryId }
+  | { kind: "inspect" };
+
 interface CliArgs {
   sessionId: string;
-  prompt: string | undefined;
-  navigateTarget: string | undefined;
-  navigateLabel: string | undefined;
-  summarize: boolean;
-  setLabelTarget: string | undefined;
-  setLabelText: string | undefined;
-  inspect: boolean;
+  /** The conversation a prompt, fork, or preview addresses; the root when omitted. */
+  conversationId: ConversationId | undefined;
+  mode: Mode;
+}
+
+const USAGE =
+  'Usage: npm run agent -- --session <id> --prompt "<text>" [--conversation <id>]\n' +
+  "   or: npm run agent -- --session <id> --fork <entryId> [--conversation <id>]\n" +
+  '   or: npm run agent -- --session <id> --label <entryId> "<text>"      (empty text clears the label)\n' +
+  "   or: npm run agent -- --session <id> --preview <entryId> [--conversation <id>]\n" +
+  "   or: npm run agent -- --session <id> --inspect\n" +
+  "One CLI invocation is one turn, one fork, one label write, one preview, or one read-only inspection.";
+
+function parseId<T>(raw: string | undefined, flag: string): T {
+  const parsed = Number(raw);
+  if (raw === undefined || !Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${flag} needs a positive integer id, got "${raw ?? ""}".\n${USAGE}`);
+  }
+  return parsed as T;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   let sessionId: string | undefined;
+  let conversationId: ConversationId | undefined;
   let prompt: string | undefined;
-  let navigateTarget: string | undefined;
-  let navigateLabel: string | undefined;
-  let summarize = false;
-  let setLabelTarget: string | undefined;
-  let setLabelText: string | undefined;
+  let forkAtEntry: EntryId | undefined;
+  let label: { entryId: EntryId; text: string } | undefined;
+  let previewAt: EntryId | undefined;
   let inspect = false;
 
   let index = 0;
@@ -41,166 +60,128 @@ function parseArgs(argv: string[]): CliArgs {
     if (flag === "--session") {
       sessionId = argv[index + 1];
       index += 2;
+    } else if (flag === "--conversation") {
+      conversationId = parseId<ConversationId>(argv[index + 1], "--conversation");
+      index += 2;
     } else if (flag === "--prompt") {
       prompt = argv[index + 1];
       index += 2;
-    } else if (flag === "--navigate") {
-      navigateTarget = argv[index + 1];
+    } else if (flag === "--fork") {
+      forkAtEntry = parseId<EntryId>(argv[index + 1], "--fork");
       index += 2;
     } else if (flag === "--label") {
-      navigateLabel = argv[index + 1];
-      index += 2;
-    } else if (flag === "--summarize") {
-      summarize = true;
-      index += 1;
-    } else if (flag === "--set-label") {
-      setLabelTarget = argv[index + 1];
-      setLabelText = argv[index + 2];
+      label = { entryId: parseId<EntryId>(argv[index + 1], "--label"), text: argv[index + 2] ?? "" };
       index += 3;
+    } else if (flag === "--preview") {
+      previewAt = parseId<EntryId>(argv[index + 1], "--preview");
+      index += 2;
     } else if (flag === "--inspect") {
       inspect = true;
       index += 1;
     } else {
-      throw new Error(`Unknown argument "${flag}".`);
+      throw new Error(`Unknown argument "${flag}".\n${USAGE}`);
     }
   }
 
   if (!sessionId) {
-    throw new Error(
-      'Usage: npm run agent -- --session <id> --prompt "<text>"\n' +
-        "   or: npm run agent -- --session <id> --navigate <entryId|root> [--label \"<text>\"] [--summarize]\n" +
-        '   or: npm run agent -- --session <id> --set-label <entryId> "<text>"\n' +
-        "   or: npm run agent -- --session <id> --inspect\n" +
-        "One CLI invocation is one turn, one navigation, one label write, or one read-only inspection.",
-    );
+    throw new Error(USAGE);
   }
-  const modeCount = [Boolean(prompt), Boolean(navigateTarget), Boolean(setLabelTarget), inspect].filter(
-    Boolean,
-  ).length;
-  if (modeCount !== 1) {
-    throw new Error("Exactly one of --prompt, --navigate, --set-label, or --inspect is required.");
+  const modes: Mode[] = [
+    ...(prompt ? [{ kind: "prompt", prompt } as const] : []),
+    ...(forkAtEntry !== undefined ? [{ kind: "fork", at: forkAtEntry } as const] : []),
+    ...(label ? [{ kind: "label", entryId: label.entryId, label: label.text === "" ? undefined : label.text } as const] : []),
+    ...(previewAt !== undefined ? [{ kind: "preview", at: previewAt } as const] : []),
+    ...(inspect ? [{ kind: "inspect" } as const] : []),
+  ];
+  const [mode, ...extra] = modes;
+  if (mode === undefined || extra.length > 0) {
+    throw new Error(`Exactly one of --prompt, --fork, --label, --preview, or --inspect is required.\n${USAGE}`);
   }
-  if ((navigateLabel !== undefined || summarize) && !navigateTarget) {
-    throw new Error("--label and --summarize only apply to --navigate.");
+  if (conversationId !== undefined && !["prompt", "fork", "preview"].includes(mode.kind)) {
+    throw new Error("--conversation only applies to --prompt, --fork, and --preview.");
   }
 
-  return { sessionId, prompt, navigateTarget, navigateLabel, summarize, setLabelTarget, setLabelText, inspect };
-}
-
-function logRunResult(label: string, result: RunResult): boolean {
-  if (!result.ok) {
-    console.log(`[${label}] rejected: ${result.error._tag}: ${result.error.message}`);
-    return true;
-  }
-  if (result.value.status === "suspended") {
-    console.log(`[${label}] operationId=${result.value.operationId} status=suspended (deferred provider response)`);
-    return false;
-  }
-  const record = result.value;
-  console.log(
-    `[${label}] operationId=${record.operationId} kind=${record.kind} status=${record.status} ` +
-      `fromTip=${record.fromTipId ?? "null"} tip=${record.tipId ?? "null"}`,
-  );
-  if (record.status !== "completed" && record.error) {
-    console.error(`[Fatal] operation ${record.status}: ${record.error.code}: ${record.error.message}`);
-    return true;
-  }
-  return false;
-}
-
-function logNavigationResult(result: NavigationResult): boolean {
-  if (!result.ok) {
-    console.log(`[Navigate] rejected: ${result.error._tag}: ${result.error.message}`);
-    return true;
-  }
-  const record = result.value.navigation;
-  console.log(
-    `[Navigate] operationId=${record.operationId} kind=${record.kind} status=${record.status} ` +
-      `fromTip=${record.fromTipId ?? "null"} tip=${record.tipId ?? "null"}`,
-  );
-  if (record.status !== "completed" && record.error) {
-    console.error(`[Fatal] navigation ${record.status}: ${record.error.code}: ${record.error.message}`);
-    return true;
-  }
-  return false;
+  return { sessionId, conversationId, mode };
 }
 
 async function main(): Promise<void> {
-  const { sessionId, prompt, navigateTarget, navigateLabel, summarize, setLabelTarget, setLabelText, inspect } =
-    parseArgs(process.argv.slice(2));
+  const { sessionId, conversationId, mode } = parseArgs(process.argv.slice(2));
   const context = BACKGROUND_CONTEXT;
+  const models = builtinModels();
 
-  const repo = createSessionRepo(SESSIONS_ROOT);
-  const { session, created } = await openOrCreateSession(repo, sessionId, SESSION_GROUP, context);
+  const { storage, created, path } = await openSessionStorage(SESSIONS_ROOT, sessionId, context);
+  console.log(`[Session] id=${sessionId} ${created ? "created" : "reopened"} path=${path}`);
 
+  const { harness, root, inspection } = await openHarness(
+    storage,
+    { models, selection: modelSelectionFromEnvironment() },
+    context,
+  );
   console.log(
-    `[Session] id=${session.metadata.id} ${created ? "created" : "reopened"} path=${session.metadata.path}`,
+    `[Harness] unfinishedTasks=${inspection.tasks.length} unsettledSubmissions=${inspection.submissions.length}`,
   );
 
-  const { harness, lane, open } = await openMainLane(session, context);
-  console.log(`[Harness] lane=main openOperationsOnAttach=${open.length}`);
+  const target = conversationId === undefined ? root : await harness.conversation(conversationId, context);
+  if (target === undefined) {
+    throw new Error(`No conversation ${conversationId} in session ${sessionId}. Run --inspect to list them.`);
+  }
 
   async function printTree(when: "before" | "after"): Promise<void> {
-    const allEntries = await session.findEntries({ order: "asc" }, context);
-    const tipId = await lane.getTipId(context);
-    const labels = new Map<string, string>();
-    for (const entry of allEntries) {
-      const label = await harness.getLabel(entry.id, context);
-      if (label !== undefined) {
-        labels.set(entry.id, label);
-      }
-    }
-    const tips = findBranchTips(allEntries);
-    console.log(
-      `[Tree][${when}] totalEntries=${allEntries.length} branchTips=${tips.length} activeTip=${tipId ?? "null"}`,
-    );
-    console.log(renderTree(allEntries, { labels, activeTipId: tipId }));
+    const branches = await loadBranches(harness, storage, context);
+    const tips = branchTips(branches)
+      .map((tip) => `c${tip.conversationId}:${tip.entryId ?? "none"}`)
+      .join(" ");
+    console.log(`[Tree][${when}] conversations=${branches.length} tips=${tips}`);
+    console.log(renderTree(branches, { labels: await readLabels(harness, context), selected: target?.id }));
   }
 
   await printTree("before");
 
-  if (inspect) {
-    await harness.close(context);
-    await repo.close(context);
-    return;
-  }
-
-  if (setLabelTarget !== undefined) {
-    console.log(`[Label][${sessionId}] setLabel(${setLabelTarget}, ${JSON.stringify(setLabelText ?? "")})`);
-    await harness.setLabel(setLabelTarget, setLabelText, context);
-    await printTree("after");
-    await harness.close(context);
-    await repo.close(context);
-    return;
-  }
-
-  const detachTrace = attachHarnessTraceLogger(harness, sessionId, (line) => console.log(line));
-
   let failed = false;
-  if (navigateTarget !== undefined) {
-    const targetId = navigateTarget === "root" ? null : navigateTarget;
-    console.log(
-      `[User][${sessionId}] (navigate to ${targetId ?? "root"}${summarize ? ", summarized" : ""}` +
-        `${navigateLabel ? `, label="${navigateLabel}"` : ""})`,
-    );
-    const result = await lane.navigateTree(
-      targetId,
-      { summarize, ...(navigateLabel === undefined ? {} : { label: navigateLabel }) },
-      context,
-    );
-    failed = logNavigationResult(result);
-  } else {
-    console.log(`[User][${sessionId}] ${prompt}`);
-    const result = await lane.prompt(prompt as string, undefined, context);
-    failed = logRunResult("Operation", result);
+  switch (mode.kind) {
+    case "inspect":
+      break;
+    case "prompt": {
+      const trace = await attachTraceLogger(harness, target.id, (line) => console.log(line), context, {
+        tag: `c${target.id}`,
+      });
+      console.log(`[User][c${target.id}] ${mode.prompt}`);
+      const submission = await target.submit({ type: "input", content: mode.prompt }, context);
+      const settled = await submission.wait(context);
+      await trace.settled(settled.id);
+      await trace.stop();
+      console.log(`[Submission] id=${settled.id} status=${settled.status}`);
+      failed = settled.status !== "done";
+      break;
+    }
+    case "fork": {
+      const fork = await forkAt(target, mode.at, context);
+      const record = (await loadBranches(harness, storage, context)).find((branch) => branch.record.id === fork.id)?.record;
+      console.log(`[Fork] ${record ? describeFork(record) : `conversation ${fork.id}`}`);
+      break;
+    }
+    case "label":
+      await setLabel(harness, storage, mode.entryId, mode.label, context);
+      console.log(`[Label] entry ${mode.entryId} ${mode.label === undefined ? "cleared" : `= "${mode.label}"`}`);
+      break;
+    case "preview": {
+      const view = await target.context(context, { at: mode.at });
+      console.log(
+        `[Preview] a fork of c${target.id} at entry ${mode.at} would start with ${view.entries.length} entries ` +
+          `and send ${view.messages.length} messages: ${view.messages.map((message) => message.role).join(", ")}`,
+      );
+      for (const entry of view.entries) {
+        console.log(`[Preview]   ${entry.id} ${summarizeEntry(entry)}`);
+      }
+      break;
+    }
   }
 
-  detachTrace();
-
-  await printTree("after");
+  if (mode.kind !== "inspect" && mode.kind !== "preview") {
+    await printTree("after");
+  }
 
   await harness.close(context);
-  await repo.close(context);
 
   if (failed) {
     process.exitCode = 1;

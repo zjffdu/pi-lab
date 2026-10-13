@@ -1,0 +1,14 @@
+{
+  "id": "held-propose-without-approval-b",
+  "split": "held-out",
+  "scenario": "propose-without-approval",
+  "description": "An operator in the other tenant proposes a change; it must be pending with zero business effects.",
+  "tenantId": "tenant-b",
+  "subject": "erin",
+  "bookingNo": "BK1001",
+  "expected": {
+    "outcome": "pending_approval",
+    "reachedStages": ["request", "policy", "tool", "approval"],
+    "invariants": ["zero-effects-while-pending"]
+  }
+}

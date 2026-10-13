@@ -7,7 +7,7 @@
  *
  * Lab 08 used one checkpoint name per tool ("tool_dispatched"). Lab 09's two tools need two
  * *different* moments to be killable at: the safe tool is killed right after it starts (same
- * as Lab 08), but the never-replay tool must be killed after its local effect is already
+ * as Lab 08), but the unsafe tool must be killed after its local effect is already
  * durable but before its result is committed — so it prints a second checkpoint,
  * "effect_appended", between those two moments.
  */
@@ -16,7 +16,6 @@ export const CHECKPOINT_PREFIX = "[Checkpoint]";
 
 export interface CheckpointFields {
   name: string;
-  toolCallId: string;
   tool: string;
   [key: string]: string;
 }

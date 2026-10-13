@@ -1,8 +1,27 @@
-import type { AgentHarness, AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
+import type { Message } from "@earendil-works/pi-ai";
+import {
+  type AgentEvent,
+  type ConversationId,
+  type Harness,
+  type SubmissionId,
+  watchEvents,
+} from "@earendil-works/pi-durable";
 
 export type TraceWriter = (line: string) => void;
 
-function textOf(message: AgentMessage): string {
+export interface TraceHandle {
+  /**
+   * Resolves once the trace has rendered every line up to this submission's terminal `submission`
+   * event, which the stream delivers after `run_end`. `WatchHandle.stop()` only promises to stop
+   * future callbacks, not to flush pending frames, so callers wait here before stopping. If the
+   * event never arrives within `timeoutMs`, a visible warning line is written and the wait ends.
+   */
+  settled(submissionId: SubmissionId, timeoutMs?: number): Promise<void>;
+  stop(): Promise<void>;
+}
+
+function textOf(message: Message): string {
   if (message.role === "user") {
     return typeof message.content === "string"
       ? message.content
@@ -15,30 +34,31 @@ function textOf(message: AgentMessage): string {
 }
 
 /**
- * Renders `AgentHarness.events` as an indented run/turn/tool tree instead of one flat
- * `[Harness][sessionId] ...` line per event — `▶`/`◀` mark a span opening and closing,
- * aligned at the same indent (bracket-style). Same idea as Lab 01's `Agent`-level logger,
- * adapted to `harness.events.on(type, listener)` — a per-harness bus with one registration
- * per event type, rather than a single `Agent.subscribe()` entry point.
+ * Renders a conversation's committed event stream as an indented run/turn/tool tree — the same
+ * `▶`/`◀` bracket style as the earlier labs' loggers. `watchEvents` is a stream derived from
+ * storage commits, one batch per commit, not callbacks fired from inside a live agent loop: the
+ * events describe what was durably committed, in commit order.
  *
- * Only "run" and "turn" are genuine LIFO spans — a lane never has more than one of each
- * open at a time. A tool call is deliberately NOT pushed onto this stack; it prints as a
- * plain line at the current depth, same as a message line. This lab's own tool
- * (`get_booking`) is always sequential and never interrupted, so the difference is
- * invisible here — but see Lab 09's version of this file for the two real scenarios (crash
- * recovery, parallel tool execution) where treating "tool" as its own push/pop span would
- * silently corrupt every indent after it.
+ * Only "run" and "turn" are genuine LIFO spans. A tool call prints as a plain line at the
+ * current depth, so overlapping tool calls (a later lab) stay siblings instead of corrupting
+ * every indent after them.
  *
- * `message_start` and `entry_added` are intentionally not subscribed to here: every fact
- * they would add (role, entryId) is already folded into the corresponding `message_end`
- * line — this lab has no non-message entry type (that begins with compaction in Lab 10),
- * so there is nothing `entry_added` alone would ever reveal.
+ * The model's *request* and Pi's *execution* are separate lines: `assistant (tool call) name call=<id>
+ * args=<json>` is what the model asked for, and the `tool_start`/`tool_end` pair below it is the harness
+ * running it. The `call=` id pairs the two. One line is printed per requested call, alongside any text.
+ *
+ * `message_start`, `message_update`, `tool_execution_update`, `usage_changed`, and `inbox_update` are
+ * not rendered: every fact they would add (role, entry id, outcome) is already on the matching
+ * `message_end` / `tool_execution_end` line. A terminal `submission` event is consumed only to
+ * release `settled()`; the CLI prints the submission's outcome itself. The snapshot delivered at attachment
+ * holds the transcript from earlier processes and is deliberately not replayed as trace output.
  */
-export function attachHarnessTraceLogger(
-  harness: AgentHarness,
-  _sessionId: string,
+export async function attachTraceLogger(
+  harness: Harness,
+  conversationId: ConversationId,
   write: TraceWriter,
-): () => void {
+  context: Context,
+): Promise<TraceHandle> {
   type Span = "run" | "turn";
   const stack: Span[] = [];
   const pad = () => "  ".repeat(stack.length);
@@ -53,46 +73,110 @@ export function attachHarnessTraceLogger(
     write(`${pad()}${text}`);
   };
 
-  const unsubscribers = [
-    harness.events.on("lane_created", (event) => {
-      write(`${pad()}lane "${event.lane}" created`);
-    }),
-    harness.events.on("run_start", (event) => {
-      open("run", `▶ run ${event.runId}`);
-    }),
-    harness.events.on("turn_start", (event) => {
-      open("turn", `▶ turn ${event.turnId}`);
-    }),
-    harness.events.on("tool_start", (event) => {
-      write(`${pad()}▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
-    }),
-    harness.events.on("tool_end", (event) => {
-      write(`${pad()}◀ tool_end ${event.toolName} status=${event.isError ? "error" : "success"}`);
-    }),
-    harness.events.on("message_end", (event) => {
-      const message = event.message;
-      const prefix = pad();
-      const entry = ` entry=${event.entryId ?? "none"}`;
-      if (message.role === "user") {
-        write(`${prefix}user      "${textOf(message)}"${entry}`);
-      } else if (message.role === "toolResult") {
-        write(`${prefix}toolResult ${message.toolName} status=${message.isError ? "error" : "success"}${entry}`);
-      } else {
-        const text = textOf(message);
-        write(text ? `${prefix}[Assistant]${entry} ${text}` : `${prefix}assistant (tool call only, no text)${entry}`);
-      }
-    }),
-    harness.events.on("turn_end", (event) => {
-      close("turn", `◀ turn_end tool_results=${event.toolResults.length}`);
-    }),
-    harness.events.on("run_end", (event) => {
-      close("run", `◀ run_end status=${event.status} fromTip=${event.fromTipId ?? "null"} tip=${event.tipId ?? "null"}`);
-    }),
-  ];
+  let turnNumber = 0;
+  let toolResultsInTurn = 0;
 
-  return () => {
-    for (const unsubscribe of unsubscribers) {
-      unsubscribe();
+  const settledIds = new Set<SubmissionId>();
+  const waiters = new Map<SubmissionId, () => void>();
+
+  const render = (event: AgentEvent): void => {
+    switch (event.type) {
+      case "submission":
+        if (event.record.status === "done" || event.record.status === "unanswered") {
+          settledIds.add(event.record.id);
+          waiters.get(event.record.id)?.();
+        }
+        break;
+      case "run_start":
+        open("run", `▶ run inputs=[${event.inputs.join(",")}]`);
+        break;
+      case "turn_start":
+        turnNumber += 1;
+        toolResultsInTurn = 0;
+        open("turn", `▶ turn #${turnNumber}`);
+        break;
+      case "message_end": {
+        const message = event.entry.model?.[0];
+        const entry = `entry=${event.entry.id}`;
+        if (!message) {
+          write(`${pad()}${event.entry.kind} ${entry}`);
+        } else if (message.role === "user") {
+          write(`${pad()}user       "${textOf(message)}" ${entry}`);
+        } else if (message.role === "system") {
+          write(`${pad()}system     (prompt and tool changes) ${entry}`);
+        } else if (message.role === "toolResult") {
+          toolResultsInTurn += 1;
+          write(`${pad()}toolResult ${message.toolName} status=${message.isError ? "error" : "success"} ${entry}`);
+        } else {
+          const text = textOf(message);
+          const toolCalls = message.content.filter((block) => block.type === "toolCall");
+          if (message.errorMessage) {
+            write(`${pad()}assistant (${message.stopReason}) ${message.errorMessage} ${entry}`);
+          } else {
+            // A message can carry text and tool-call requests at once; print both, never one in place of the other.
+            if (text) {
+              write(`${pad()}[Assistant] ${entry} ${text}`);
+            }
+            for (const call of toolCalls) {
+              write(`${pad()}assistant (tool call) ${call.name} call=${call.id} args=${JSON.stringify(call.arguments)} ${entry}`);
+            }
+            if (!text && toolCalls.length === 0) {
+              write(`${pad()}assistant (empty) ${entry}`);
+            }
+          }
+        }
+        break;
+      }
+      case "tool_execution_start":
+        write(`${pad()}▶ tool_start ${event.toolName} call=${event.toolCallId} args=${JSON.stringify(event.args)}`);
+        break;
+      case "tool_execution_end": {
+        const result = event.entry?.model?.[0];
+        const failed = result?.role === "toolResult" && result.isError;
+        write(`${pad()}◀ tool_end ${event.toolName} status=${failed ? "error" : "success"}`);
+        break;
+      }
+      case "auto_retry_start":
+        write(`${pad()}↻ retry attempt=${event.attempt} ${event.errorMessage}`);
+        break;
+      case "turn_end":
+        close("turn", `◀ turn_end #${turnNumber} tool_results=${toolResultsInTurn}`);
+        break;
+      case "run_end":
+        close("run", `◀ run_end inputs=[${event.inputs.join(",")}]`);
+        break;
+      default:
+        break;
     }
+  };
+
+  const stream = await watchEvents(harness, conversationId, context);
+  stream.start(async (events) => {
+    for (const event of events) {
+      render(event);
+    }
+  });
+
+  return {
+    settled(submissionId, timeoutMs = 5000) {
+      if (settledIds.has(submissionId)) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          waiters.delete(submissionId);
+          write(`${pad()}trace: no settle event for submission ${submissionId} within ${timeoutMs}ms`);
+          resolve();
+        }, timeoutMs);
+        waiters.set(submissionId, () => {
+          clearTimeout(timer);
+          waiters.delete(submissionId);
+          resolve();
+        });
+      });
+    },
+    async stop() {
+      await stream.stop();
+    },
   };
 }

@@ -2,45 +2,45 @@ import "dotenv/config";
 
 import { fileURLToPath } from "node:url";
 
-import type { RunResult } from "@earendil-works/pi-agent-core";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
-import { appendCaseNoteEntry, type CaseNoteData, type CaseNoteVisibility } from "./case-note-entries.js";
-import { openMainLane } from "./create-harness.js";
-import { attachHarnessTraceLogger, attachProjectedContextLogger } from "./harness-trace-logger.js";
-import { BACKGROUND_CONTEXT, createSessionRepo, openOrCreateSession } from "./session-store.js";
-
-/** Fixed grouping key, same role as earlier labs' `SESSION_GROUP` — see `openOrCreateSession`. */
-const SESSION_GROUP = "lab-12-context-projection";
+import { caseNoteEvidence, forbidInternalOnlyValues } from "./case-note-evidence.js";
+import {
+  appendCaseNote,
+  type CaseNoteData,
+  type CaseNoteVisibility,
+  type CaseNoteWritePolicy,
+} from "./case-note-entries.js";
+import { createBookingRegistry, modelSelectionFromEnvironment, openHarness } from "./create-harness.js";
+import { attachTraceLogger } from "./harness-trace-logger.js";
+import { createProviderBoundary } from "./provider-boundary.js";
+import { BACKGROUND_CONTEXT, openSessionStorage } from "./session-store.js";
+import { listEntries, summarizeEntry } from "./transcript.js";
 
 const SESSIONS_ROOT = fileURLToPath(new URL("../session-data", import.meta.url));
 
-interface AddNoteArgs {
+interface AddNote {
   bookingNo: string;
   visibility: CaseNoteVisibility;
   text: string;
   internalOnly: string | undefined;
+  policy: CaseNoteWritePolicy;
 }
 
-interface CliArgs {
-  sessionId: string;
-  prompt: string | undefined;
-  addNote: AddNoteArgs | undefined;
-  withProjection: boolean;
-  inspect: boolean;
-}
+type Mode = { kind: "prompt"; prompt: string } | { kind: "add-note"; note: AddNote } | { kind: "inspect" };
 
-function parseVisibility(raw: string): CaseNoteVisibility {
-  if (raw !== "shared" && raw !== "internal") {
-    throw new Error(`--add-note's visibility must be "shared" or "internal", got "${raw}".`);
-  }
-  return raw;
-}
+const USAGE =
+  'Usage: npm run agent -- --session <id> --prompt "<text>"\n' +
+  '   or: npm run agent -- --session <id> --add-note <bookingNo> <shared|internal> "<text>" ' +
+  '[--internal-only "<text>"] [--durable-only]\n' +
+  "   or: npm run agent -- --session <id> --inspect\n" +
+  "One CLI invocation is one turn, one durable case-note write, or one read-only inspection. " +
+  "--durable-only writes the note without its model message, so it never reaches the model.";
 
-function parseArgs(argv: string[]): CliArgs {
+function parseArgs(argv: string[]): { sessionId: string; mode: Mode } {
   let sessionId: string | undefined;
   let prompt: string | undefined;
-  let addNote: AddNoteArgs | undefined;
-  let withProjection = false;
+  let addNote: AddNote | undefined;
   let inspect = false;
 
   let index = 0;
@@ -54,138 +54,126 @@ function parseArgs(argv: string[]): CliArgs {
       index += 2;
     } else if (flag === "--add-note") {
       const bookingNo = argv[index + 1];
-      const visibilityRaw = argv[index + 2];
+      const visibility = argv[index + 2];
       const text = argv[index + 3];
-      if (bookingNo === undefined || visibilityRaw === undefined || text === undefined) {
-        throw new Error('--add-note requires: <bookingNo> <shared|internal> "<text>"');
+      if (bookingNo === undefined || text === undefined || (visibility !== "shared" && visibility !== "internal")) {
+        throw new Error(`--add-note needs <bookingNo> <shared|internal> "<text>".\n${USAGE}`);
       }
-      addNote = { bookingNo, visibility: parseVisibility(visibilityRaw), text, internalOnly: undefined };
+      addNote = { bookingNo, visibility, text, internalOnly: undefined, policy: "projected" };
       index += 4;
-    } else if (flag === "--internal-only") {
+    } else if (flag === "--internal-only" || flag === "--durable-only") {
       if (addNote === undefined) {
-        throw new Error("--internal-only must follow --add-note.");
+        throw new Error(`${flag} must follow --add-note.\n${USAGE}`);
       }
-      addNote = { ...addNote, internalOnly: argv[index + 1] };
-      index += 2;
-    } else if (flag === "--with-projection") {
-      withProjection = true;
-      index += 1;
+      if (flag === "--internal-only") {
+        addNote = { ...addNote, internalOnly: argv[index + 1] };
+        index += 2;
+      } else {
+        addNote = { ...addNote, policy: "durable-only" };
+        index += 1;
+      }
     } else if (flag === "--inspect") {
       inspect = true;
       index += 1;
     } else {
-      throw new Error(`Unknown argument "${flag}".`);
+      throw new Error(`Unknown argument "${flag}".\n${USAGE}`);
     }
   }
 
   if (!sessionId) {
-    throw new Error(
-      'Usage: npm run agent -- --session <id> [--with-projection] --prompt "<text>"\n' +
-        '   or: npm run agent -- --session <id> --add-note <bookingNo> <shared|internal> "<text>" ' +
-        '[--internal-only "<text>"]\n' +
-        "   or: npm run agent -- --session <id> --inspect\n" +
-        "One CLI invocation is one turn, one durable case-note write, or one read-only " +
-        "inspection. --with-projection only affects --prompt: it decides whether this " +
-        "invocation's harness has entry-projectors.ts's projector wired at all.",
-    );
+    throw new Error(USAGE);
   }
-  const modeCount = [Boolean(prompt), Boolean(addNote), inspect].filter(Boolean).length;
-  if (modeCount !== 1) {
-    throw new Error("Exactly one of --prompt, --add-note, or --inspect is required.");
+  const modes: Mode[] = [
+    ...(prompt ? [{ kind: "prompt", prompt } as const] : []),
+    ...(addNote ? [{ kind: "add-note", note: addNote } as const] : []),
+    ...(inspect ? [{ kind: "inspect" } as const] : []),
+  ];
+  const [mode, ...extra] = modes;
+  if (mode === undefined || extra.length > 0) {
+    throw new Error(`Exactly one of --prompt, --add-note, or --inspect is required.\n${USAGE}`);
   }
-
-  return { sessionId, prompt, addNote, withProjection, inspect };
-}
-
-function logRunResult(label: string, result: RunResult): boolean {
-  if (!result.ok) {
-    console.log(`[${label}] rejected: ${result.error._tag}: ${result.error.message}`);
-    return true;
-  }
-  if (result.value.status === "suspended") {
-    console.log(`[${label}] operationId=${result.value.operationId} status=suspended (deferred provider response)`);
-    return false;
-  }
-  const record = result.value;
-  console.log(
-    `[${label}] operationId=${record.operationId} kind=${record.kind} status=${record.status} ` +
-      `fromTip=${record.fromTipId ?? "null"} tip=${record.tipId ?? "null"}`,
-  );
-  if (record.status !== "completed" && record.error) {
-    console.error(`[Fatal] operation ${record.status}: ${record.error.code}: ${record.error.message}`);
-    return true;
-  }
-  return false;
+  return { sessionId, mode };
 }
 
 async function main(): Promise<void> {
-  const { sessionId, prompt, addNote, withProjection, inspect } = parseArgs(process.argv.slice(2));
+  const { sessionId, mode } = parseArgs(process.argv.slice(2));
   const context = BACKGROUND_CONTEXT;
+  const models = builtinModels();
 
-  const repo = createSessionRepo(SESSIONS_ROOT);
-  const { session, created } = await openOrCreateSession(repo, sessionId, SESSION_GROUP, context);
+  const { storage, created, path } = await openSessionStorage(SESSIONS_ROOT, sessionId, context);
+  console.log(`[Session] id=${sessionId} ${created ? "created" : "reopened"} path=${path}`);
 
+  const boundary = createProviderBoundary({
+    onRequest: (request) =>
+      console.log(`[Request] #${request.index} messages=${request.messageCount} roles=[${request.roles.join(", ")}]`),
+  });
+  const { harness, root, inspection } = await openHarness(
+    storage,
+    { models, selection: modelSelectionFromEnvironment(), registry: createBookingRegistry({ boundary }) },
+    context,
+  );
   console.log(
-    `[Session] id=${session.metadata.id} ${created ? "created" : "reopened"} path=${session.metadata.path}`,
+    `[Harness] unfinishedTasks=${inspection.tasks.length} unsettledSubmissions=${inspection.submissions.length}`,
   );
 
-  const { harness, lane, open } = await openMainLane(session, context, { withCaseNoteProjection: withProjection });
-  console.log(
-    `[Harness] lane=main openOperationsOnAttach=${open.length} withCaseNoteProjection=${withProjection}`,
-  );
+  // Every internalOnly value in the durable session is a text that must never reach the provider. Only the
+  // count is printed.
+  const armed = await forbidInternalOnlyValues(root, boundary, context);
+  console.log(`[Boundary] forbidden texts armed from durable case notes: ${armed}`);
 
-  async function printEntries(when: "before" | "after"): Promise<void> {
-    const allEntries = await session.findEntries({ order: "asc" }, context);
-    console.log(`[Entries][${when}] total=${allEntries.length}`);
-    for (const entry of allEntries) {
-      const customType = entry.type === "custom" ? ` customType=${entry.customType}` : "";
-      const noteVisibility =
-        entry.type === "custom" && entry.customType === "case_note" && typeof entry.data === "object" && entry.data !== null
-          ? ` visibility=${(entry.data as Record<string, unknown>).visibility}`
-          : "";
-      console.log(`  seq=${entry.seq} id=${entry.id} parent=${entry.parentId ?? "null"} type=${entry.type}${customType}${noteVisibility}`);
+  async function printState(): Promise<void> {
+    const entries = await listEntries(root, context);
+    const evidence = new Map((await caseNoteEvidence(root, context)).map((row) => [row.entryId, row]));
+    console.log(`[Entries] total=${entries.length}`);
+    for (const entry of entries) {
+      const row = evidence.get(entry.id);
+      console.log(
+        row
+          ? `  ${entry.id} ${entry.kind} ${row.noteId} visibility=${row.visibility} ` +
+              `stored=${row.storedModelMessages} contributes=${row.contributedMessages}`
+          : `  ${entry.id} ${summarizeEntry(entry)}`,
+      );
+    }
+    const view = await root.context(context);
+    console.log(`[Context] the next request would carry ${view.messages.length} message(s): ${view.messages.map((m) => m.role).join(", ")}`);
+  }
+
+  let failed = false;
+  switch (mode.kind) {
+    case "inspect":
+      await printState();
+      break;
+    case "add-note": {
+      const note: CaseNoteData = {
+        noteId: `CN-cli-${Date.now()}`,
+        bookingNo: mode.note.bookingNo,
+        author: "cli-operator",
+        visibility: mode.note.visibility,
+        text: mode.note.text,
+        ...(mode.note.internalOnly === undefined ? {} : { internalOnly: mode.note.internalOnly }),
+      };
+      const entry = await appendCaseNote(root, note, mode.note.policy, context);
+      console.log(
+        `[CaseNote] entry=${entry.id} ${note.noteId} visibility=${note.visibility} policy=${mode.note.policy} ` +
+          `storedModelMessages=${entry.model?.length ?? 0}`,
+      );
+      await printState();
+      break;
+    }
+    case "prompt": {
+      const trace = await attachTraceLogger(harness, root.id, (line) => console.log(line), context);
+      console.log(`[User] ${mode.prompt}`);
+      const settled = await (await root.submit({ type: "input", content: mode.prompt }, context)).wait(context);
+      await trace.settled(settled.id);
+      await trace.stop();
+      console.log(`[Submission] id=${settled.id} status=${settled.status}`);
+      console.log(`[Boundary] requests=${boundary.requests.length} violations=${boundary.violations.length}`);
+      failed = settled.status !== "done" || boundary.violations.length > 0;
+      break;
     }
   }
 
-  await printEntries("before");
-
-  if (inspect) {
-    await harness.close(context);
-    await repo.close(context);
-    return;
-  }
-
-  if (addNote !== undefined) {
-    const note: CaseNoteData = {
-      noteId: `CN-cli-${Date.now()}`,
-      bookingNo: addNote.bookingNo,
-      author: "cli-operator",
-      visibility: addNote.visibility,
-      text: addNote.text,
-      internalOnly: addNote.internalOnly,
-    };
-    const entryId = await appendCaseNoteEntry(lane, note, context);
-    console.log(`[CaseNote][${sessionId}] appended entryId=${entryId} visibility=${note.visibility}`);
-    await printEntries("after");
-    await harness.close(context);
-    await repo.close(context);
-    return;
-  }
-
-  const detachTrace = attachHarnessTraceLogger(harness, sessionId, (line) => console.log(line));
-  const detachContextLog = attachProjectedContextLogger(harness, sessionId, (line) => console.log(line));
-
-  console.log(`[User][${sessionId}] ${prompt}`);
-  const result = await lane.prompt(prompt as string, undefined, context);
-  const failed = logRunResult("Operation", result);
-
-  detachContextLog();
-  detachTrace();
-
-  await printEntries("after");
-
   await harness.close(context);
-  await repo.close(context);
 
   if (failed) {
     process.exitCode = 1;
