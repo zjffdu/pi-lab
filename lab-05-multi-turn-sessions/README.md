@@ -78,7 +78,7 @@ From live runs against `deepseek-flash` (wording varies by model; the registry a
 | restart | `conversation-a` | `created`, size 1 | no | asked which booking number |
 
 - **The turn counter is the proof of reuse.** `conversation-a`'s follow-up is `turn #3`; `conversation-b` and the
-  restarted `conversation-a` both start at `turn #1`. The counter lives in the logger subscribed to that agent.
+  restarted `conversation-a` both start at `turn #1`. The counter lives in the logger subscribed to that agent and counts model calls (a tool call adds one), not user messages, which is why a second user message can be `turn #3`.
 - **The follow-up needed no tool call** because the tool result was already in the transcript.
 - **No answer invented a container.** The system prompt tells the model to ask when nothing has been established;
   that is a prompt behavior, so it can vary with the model.

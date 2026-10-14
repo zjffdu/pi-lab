@@ -93,3 +93,9 @@ Today her `operator` role is revoked (she keeps `viewer`) and she reopens the se
 - `npm run demo:revocation` output matches the scenario above, including the `system     tools -[…]` and
   `⊘ tool_refused … code=tool_unavailable` lines on day 2.
 - Not independently reviewed: the same session that wrote the code also wrote the tests and these notes.
+
+## Provenance notes
+
+Copied byte-for-byte (SHA-256, first 12 hex): `security-context.ts` `7355f1e0fcf2` and `session-registry.ts` `6fcad0fbc64b`
+from Lab 16, `transcript.ts` `55f4803ed172` from Lab 13. `session-store.ts` and `session-access.ts` are this lab's own and
+were not compared with Lab 16's. Nothing imports from another lab.

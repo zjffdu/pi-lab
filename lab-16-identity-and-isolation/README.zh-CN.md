@@ -67,10 +67,7 @@ Authorization header ─► authenticator ─► SecurityContext ─► registry
 4. 有效的 tenant-A token 再加伪造的 `X-Tenant-Id: tenant-b`：provider 看到的是谁的数据？
 
 结果在这里有意**不**展示，因为本 lab 的预测还没有记录——请先预测，再去看 [REFERENCE.md](REFERENCE.md)。
-来自代码的证据是另一回事：`npm run check`（82 个离线测试）。对最终代码做了一轮 mutation（28 处单行改动），
-25 处让测试失败，符合预期；存活的 3 个都是等价或不可触发的：`jose` 的 algorithm 固定（EC key 下 `jose` 本来就
-拒绝其他算法）、接受 `unanswered` 的 run（下一道检查仍会让它失败）、`root()` 失败时关闭 harness（没有公共
-途径触发）。
+来自代码的证据是另一回事：`npm run check`（82 个离线测试）。
 
 ## 运行
 
@@ -116,8 +113,7 @@ tool result 的内容和 bearer token 从不打印。
 ## 值得知道
 
 - **Lab 15 被跳过了，这是学习者的决定。** 本 lab 使用自己的最小 harness（一个只读 tool，没有 policy hooks、
-  audit log、telemetry），因此不声称 Lab 15 的任何联合保证。工作期间工作区里出现了一个未跟踪的
-  `lab-15-integrated-runtime/` 目录；本 lab 没有使用它。
+  audit log、telemetry），因此不声称 Lab 15 的任何联合保证。
 - **真实的 Teams/Entra authentication 没有覆盖**，任何本地结果都不能暗示它。真实集成里，channel authentication
   （请求来自 Teams）不等于员工身份；员工身份必须来自经过校验的 Entra token，`tid` → tenant、`oid` → subject
   （不用 UPN 或 email，它们会变）。未验证。
@@ -131,8 +127,7 @@ tool result 的内容和 bearer token 从不打印。
   marker。清理时去掉了调用方的 abort signal，所以被取消的请求不会用 `AbortError` 盖掉真正的失败。
 - **固定版本：** `pi-durable`、`pi-ai`、`chord` 为 `1.1.0`，`jose` 为 `6.2.12`；默认模型 `deepseek-flash`。
   provider 或连接问题：见 [Lab 01](../lab-01-pi-agent-loop/README.md)。
-- 拷贝而非 import：`provider-boundary.ts`（Lab 12）、`settle.ts`（Lab 14）、`transcript.ts`（Lab 13）。拷贝时它们
-  的源文件尚未 commit，所以用 sha256 前缀标识：`d73f5b4a`、`ea2a062e`、`55f4803e`。
+- 拷贝而非 import：`provider-boundary.ts`（Lab 12）、`settle.ts`（Lab 14）、`transcript.ts`（Lab 13）。
 
 ## 文件位置
 

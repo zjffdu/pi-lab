@@ -30,7 +30,7 @@
 
 | 场景里的东西 | lab 里对应的东西 |
 | --- | --- |
-| 客户的问题 | 一个 `submission`，被杀之后状态是 `placed` |
+| 客户的问题 | 一个 `submission`，被杀之后状态是 `placed`（已受理、未完成） |
 | 点菜单 | `phase=execute` 的 `pi.tool` task |
 | 列出留下了什么 | `harness.inspect()` |
 | "继续" | `harness.resume()` + `harness.submission(id).wait()` |

@@ -46,3 +46,12 @@ A shared conversation breaks the "exactly one owner" rule in `SessionRegistry`. 
 explicit membership record (who may read, who may append), a decision about whose tool results a
 member may see, and per-message attribution — and Lab 17's per-resource authorization becomes
 necessary, because tenant + owner is no longer enough to decide access.
+
+## Evidence and provenance notes
+
+- Mutation pass over the final code (28 single-line changes): 25 made tests fail as they should. The three survivors are
+  equivalent or unreachable: the `jose` algorithm pin (`jose` already rejects other algorithms for an EC key), accepting an
+  `unanswered` run (the next check still fails it), and closing the harness when `root()` fails (no public way to trigger it).
+- Lab 15 was skipped. An untracked `lab-15-integrated-runtime/` directory appeared during the work; nothing here uses it.
+- `provider-boundary.ts` (Lab 12), `settle.ts` (Lab 14) and `transcript.ts` (Lab 13) were copied while their sources were
+  uncommitted, so sha256 prefixes identify them: `d73f5b4a`, `ea2a062e`, `55f4803e`.

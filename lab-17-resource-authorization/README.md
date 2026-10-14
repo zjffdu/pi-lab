@@ -145,9 +145,7 @@ Answer 1–3 before running the demo:
 - **Pins:** `pi-durable`, `pi-ai`, `chord` `1.1.0` (`pi-durable` is experimental, so this was observed on `1.1.0`
   only); `jose` `6.2.12`. Scripted provider only, so a real provider's handling of a history that names a tool it
   is no longer offered is untested.
-- Copied byte-for-byte (SHA-256, first 12 hex): `security-context.ts` `7355f1e0fcf2` and `session-registry.ts`
-  `6fcad0fbc64b` from Lab 16, `transcript.ts` `55f4803ed172` from Lab 13. `session-store.ts` and `session-access.ts`
-  are this lab's own and were not compared with Lab 16's. Nothing imports from another lab.
+- Copied, not imported: `security-context.ts` and `session-registry.ts` from Lab 16, `transcript.ts` from Lab 13.
 
 ## Where things are
 

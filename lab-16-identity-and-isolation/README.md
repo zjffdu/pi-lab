@@ -75,10 +75,7 @@ table. Write your predictions in [WORKSHEET.md](WORKSHEET.md) first:
 
 The results are deliberately **not** printed here, because this lab's prediction is still open — they are in
 [REFERENCE.md](REFERENCE.md), to read after you have predicted. Evidence from the code is separate: `npm run check`
-(82 offline tests). A mutation pass over the final code (28 single-line changes) made 25 tests fail as they should;
-the three survivors are equivalent or unreachable: the `jose` algorithm pin (`jose` already rejects other algorithms
-for an EC key), accepting an `unanswered` run (the next check still fails it), and closing the harness when `root()`
-fails (no public way to trigger it).
+(82 offline tests).
 
 ## Run it
 
@@ -124,8 +121,7 @@ Answer 1–4 before running the demo, the rest after:
 ## Good to know
 
 - **Lab 15 was skipped, on the learner's decision.** This lab uses its own minimal harness (one read tool, no policy
-  hooks, no audit log, no telemetry), so none of Lab 15's joint guarantees are claimed. An untracked
-  `lab-15-integrated-runtime/` directory appeared during the work; nothing here uses it.
+  hooks, no audit log, no telemetry), so none of Lab 15's joint guarantees are claimed.
 - **Real Teams/Entra authentication is not covered**, and nothing local implies it. In a real integration, channel
   authentication (the request came from Teams) is not employee identity; employee identity must come from a validated
   Entra token, with `tid` → tenant and `oid` → subject (not UPN or email, which can change). Unverified.
@@ -142,8 +138,7 @@ Answer 1–4 before running the demo, the rest after:
   real failure with an `AbortError`.
 - **Pins:** `pi-durable`, `pi-ai`, `chord` `1.1.0`, `jose` `6.2.12`; default model `deepseek-flash`. Provider or
   connection problems: see [Lab 01](../lab-01-pi-agent-loop/README.md).
-- Copied, not imported: `provider-boundary.ts` (Lab 12), `settle.ts` (Lab 14), `transcript.ts` (Lab 13). Their source
-  files were uncommitted at copy time, so sha256 prefixes identify them: `d73f5b4a`, `ea2a062e`, `55f4803e`.
+- Copied, not imported: `provider-boundary.ts` (Lab 12), `settle.ts` (Lab 14), `transcript.ts` (Lab 13).
 
 ## Where things are
 

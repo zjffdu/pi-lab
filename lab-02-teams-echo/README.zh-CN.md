@@ -35,11 +35,6 @@ transport adapter——请求进来、activity 被解析、回复发出去——
 不需要 API key 或凭证。app 以 `dangerouslyAllowUnauthenticatedRequests: true` 运行，这只有在它仅与你本机上的
 本地 Agents Playground 通信、从不接触真实 Teams 服务时才是安全的。
 
-### Pi 版本
-
-本 lab 不依赖 Pi，因此不受 Pi `0.85.1` → `1.1.x` 变化的影响，也不需要 Pi 1.1 重建版。agent loop 的 Pi 1.1 重建版是
-[`lab-01-pi-agent-loop-pi-1.1`](../lab-01-pi-agent-loop-pi-1.1/README.md)；从 Lab 03 开始的 Pi 类 lab，所固定的 Pi 版本才会起作用。
-
 ## 1. 运行前先预测
 
 在启动任何东西之前，先写下你的答案：

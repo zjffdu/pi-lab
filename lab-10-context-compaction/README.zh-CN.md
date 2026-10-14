@@ -38,6 +38,8 @@ entries:  U1 A1 T1 A1' | U2 … | … | U6 A6 | U7 A7 | U8 A8        （全部�
 下一次请求 = [ `head` 之前所有内容的 summary ] + U6 … A8
 ```
 
+`U` = 用户消息,`A` = assistant 消息,`T` = 工具结果;`A1'` 是工具结果之后的回答。
+
 三个要点：
 
 1. **compaction 是一个 task，不是一次调用。** `Conversation.compact()` 返回 task id；task 向 model 要一份 summary；

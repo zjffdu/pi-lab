@@ -166,6 +166,4 @@ scripts/approval-demo.ts          上面的实验
 tests/                            digest/state、Postgres 事务与竞态、migration、带脚本化 model 的 HTTP
 ```
 
-是复制的，不是导入的；复制时 Lab 13 和 16 是未被 track 的，所以用 hash 标识来源（sha256 前 16 位）：
-`security-context` `7355f1e0fcf29278`、`authenticator` `21922a4b2de0f27d`、`session-registry` `6fcad0fbc64bea6b`（Lab 16）；
-`transcript` `55f4803ed1723cbe`、`harness-trace-logger` `f1969976dfab53aa`（Lab 13）。
+是复制的，不是导入的，来自 Lab 13 和 Lab 16（来源标识见 [REFERENCE.md](REFERENCE.md)）。

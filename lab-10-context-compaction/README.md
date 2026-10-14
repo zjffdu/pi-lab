@@ -41,6 +41,8 @@ entries:  U1 A1 T1 A1' | U2 … | … | U6 A6 | U7 A7 | U8 A8        (all stored
 next request = [ summary of everything before `head` ] + U6 … A8
 ```
 
+`U` = user message, `A` = assistant message, `T` = tool result; `A1'` is the answer after the tool result.
+
 Three takeaways:
 
 1. **Compaction is a task, not a call.** `Conversation.compact()` returns a task id; the task asks the model for a

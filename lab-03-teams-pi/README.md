@@ -1,11 +1,10 @@
-# Lab 03 — Teams to Pi (Pi 1.1 edition)
+# Lab 03 — Teams to Pi
+
+English | [中文](README.zh-CN.md)
 
 Combine the proven Lab 01 Agent Loop with the proven Lab 02 Teams transport: a thin adapter that hands one Teams message to a fresh Pi agent and returns Pi's final answer.
 
-This is the Lab 03 experiment rebuilt on `@earendil-works/pi-agent-core` / `pi-ai` **1.1.0**. The original
-[`lab-03-teams-pi`](../lab-03-teams-pi/README.md) stays pinned to `0.85.1` and keeps working; read
-[What changed in Pi 1.1](#what-changed-in-pi-11) for the differences a learner will notice. The Teams side
-(`@microsoft/teams.apps`, the Agents Playground) is unchanged.
+It runs on `@earendil-works/pi-agent-core` / `pi-ai` **1.1.0**. The Teams side (`@microsoft/teams.apps`, the Agents Playground) comes from [Lab 02](../lab-02-teams-echo/README.md).
 
 ## Learning objective
 
@@ -23,7 +22,7 @@ Teams message
 
 Non-goals for this lab:
 
-- More than one tool (still just `get_booking`, from [Lab 01 (Pi 1.1 edition)](../lab-01-pi-agent-loop-pi-1.1/README.md))
+- More than one tool (still just `get_booking`, from [Lab 01](../lab-01-pi-agent-loop/README.md))
 - Conversation-scoped agent reuse or multi-turn context — every message gets a brand-new agent (that's [Lab 05](../ROADMAP.md))
 - Concurrent user messages
 - Real Teams tenant deployment, SSO, or persistence
@@ -59,7 +58,7 @@ interface AgentRunner {
 
 - Node.js 22.19 or newer
 - npm
-- A configured `.env` (copy `.env.example`; see [Lab 01 (Pi 1.1 edition)](../lab-01-pi-agent-loop-pi-1.1/README.md) for how to get a DeepSeek API key)
+- A configured `.env` (copy `.env.example`; see [Lab 01](../lab-01-pi-agent-loop/README.md) for how to get a DeepSeek API key)
 
 ## 1. Predict before running
 
@@ -72,7 +71,7 @@ Write down your answers before starting anything:
 ## 2. Install dependencies
 
 ```bash
-cd lab-03-teams-pi-pi-1.1
+cd lab-03-teams-pi
 npm install
 cp .env.example .env   # then fill in DEEPSEEK_API_KEY
 ```
@@ -85,7 +84,7 @@ PI_MODEL=deepseek-flash
 DEEPSEEK_API_KEY=...
 ```
 
-Pi `1.1.0` catalogs the model as `deepseek-flash` (Pi `0.85.1` called it `deepseek-v4-flash`, which no longer exists). Never commit `.env`.
+Pi `1.1.0` catalogs the model as `deepseek-flash`. Never commit `.env`.
 
 ## 3. Verify the deterministic parts
 
@@ -192,23 +191,20 @@ Answer using your terminal output:
 - Removing provider configuration keeps the transport alive and returns the fixed infrastructure answer, with evidence that the catch happened inside `agent-runner.ts` and not the Teams handler.
 - You can trace one request across transport, runtime, tool, and response boundaries using only the console output.
 
-## What changed in Pi 1.1
+## Good to know
 
-Compared with the `0.85.1` edition of this lab (see also [Lab 01's notes](../lab-01-pi-agent-loop-pi-1.1/README.md#what-changed-in-pi-11)):
-
-- **The event sequence is unchanged**, so `pi-trace-logger.ts` and the trace tree are byte-for-byte the same code and the same shape.
-- **The system prompt is now part of the transcript.** `agent.state.messages` starts with a `system` message, then `user`, `assistant`, `toolResult`, `assistant`. It emits no `message_*` event, so it never appears in the `[Pi][req:<id>]` tree. `latestAssistantText` in `agent-runner.ts` still picks the right message because it filters on `role === "assistant"`.
-- **The default model id changed** from `deepseek-v4-flash` to `deepseek-flash`. In this lab a stale id does not crash the server: `createBookingAgent` throws `Unknown model`, `agent-runner.ts` catches it, and every Teams message gets the bounded infrastructure answer with a `setup_error` trace line. That is exactly why `tests/create-agent.test.ts` asserts the default resolves in the catalog.
+- **The system prompt is part of the transcript.** `agent.state.messages` starts with a `system` message, then `user`, `assistant`, `toolResult`, `assistant`. It emits no `message_*` event, so it never appears in the `[Pi][req:<id>]` tree. `latestAssistantText` in `agent-runner.ts` still picks the right message because it filters on `role === "assistant"`.
+- **A stale model id does not crash the server.** `createBookingAgent` throws `Unknown model`, `agent-runner.ts` catches it, and every Teams message gets the bounded infrastructure answer with a `setup_error` trace line. That is why `tests/create-agent.test.ts` asserts the default resolves in the catalog.
 - **`createBookingAgent` and `createPiAgentRunner` accept an optional `streamFn`**, used only by tests to script the model.
-- **Provider failures behave as before**: an `assistant` message with `stopReason: "error"` and `agent.state.errorMessage`, which the runner turns into `provider_error` plus the infrastructure answer.
+- **Provider failures** are an `assistant` message with `stopReason: "error"` and `agent.state.errorMessage`, which the runner turns into `provider_error` plus the infrastructure answer.
 
 ## Troubleshooting
 
-See [Lab 01 (Pi 1.1 edition)](../lab-01-pi-agent-loop-pi-1.1/README.md) for model/provider errors and [Lab 02](../lab-02-teams-echo/README.md) for Playground connection issues — both apply unchanged here.
+See [Lab 01](../lab-01-pi-agent-loop/README.md) for model/provider errors and [Lab 02](../lab-02-teams-echo/README.md) for Playground connection issues — both apply unchanged here.
 
-### `setup_error Unknown model deepseek/deepseek-v4-flash`
+### `setup_error Unknown model ...`
 
-A leftover `PI_MODEL=deepseek-v4-flash` from the Pi `0.85.1` edition. Set `PI_MODEL=deepseek-flash` in `.env` and restart `npm run dev`. The Teams reply meanwhile is the fixed infrastructure answer, because the runner caught the setup failure.
+A stale `PI_MODEL` value in `.env`. Set `PI_MODEL=deepseek-flash` in `.env` and restart `npm run dev`. The Teams reply meanwhile is the fixed infrastructure answer, because the runner caught the setup failure.
 
 ### `provider_error Connection error.` even though `DEEPSEEK_API_KEY` is set
 

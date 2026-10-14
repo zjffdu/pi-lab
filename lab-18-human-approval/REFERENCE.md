@@ -60,3 +60,9 @@ HTTP endpoint, and by `SecurityContext` being the only source of "who".
 - **Approver loses the role before execution:** `403 approver_no_longer_authorized`, no effect, and
   the action stays `approved` — restoring the role restores it (fail closed, reversible).
 - **Approval unused past its window:** `409 expired`, state `expired`, no effect.
+
+## Provenance notes
+
+Labs 13 and 16 were untracked at copy time, so hashes identify the copied sources (first 16 of sha256): `security-context`
+`7355f1e0fcf29278`, `authenticator` `21922a4b2de0f27d`, `session-registry` `6fcad0fbc64bea6b` (Lab 16); `transcript`
+`55f4803ed1723cbe`, `harness-trace-logger` `f1969976dfab53aa` (Lab 13).

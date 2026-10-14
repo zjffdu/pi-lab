@@ -37,7 +37,7 @@ tools are allowed to be rerun (that is Lab 09). The customer only sees "the look
 
 | In the scenario | In the lab |
 | --- | --- |
-| the question | a `submission`, status `placed` after the kill |
+| the question | a `submission`, status `placed` (accepted, not finished) after the kill |
 | the order slip | a `pi.tool` task at `phase=execute` |
 | listing what was left | `harness.inspect()` |
 | "carry on" | `harness.resume()` + `harness.submission(id).wait()` |

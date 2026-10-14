@@ -132,9 +132,7 @@ npx vitest run -t "known gap"                       # 1 passed：旧 history 仍
 - **Principal：** 测试和 demo 用 mint 出来的可信 `SecurityContext`；认证是 Lab 16 的事。
 - **固定版本：** `pi-durable`、`pi-ai`、`chord` 为 `1.1.0`（`pi-durable` 是 experimental，所以只在 `1.1.0` 上观察过）；`jose` 为 `6.2.12`。
   只用了 scripted provider，所以真实 provider 如何处理"history 里提到了它已不再被 offer 的 tool"，没有测过。
-- 逐字节复制的文件（SHA-256 前 12 位 hex）：来自 Lab 16 的 `security-context.ts` `7355f1e0fcf2` 与
-  `session-registry.ts` `6fcad0fbc64b`，来自 Lab 13 的 `transcript.ts` `55f4803ed172`。`session-store.ts` 和
-  `session-access.ts` 是本 lab 自己的，没有和 Lab 16 的对比过。没有任何代码从其他 lab import。
+- 拷贝而非 import：来自 Lab 16 的 `security-context.ts` 与 `session-registry.ts`，来自 Lab 13 的 `transcript.ts`。
 
 ## 文件在哪里
 

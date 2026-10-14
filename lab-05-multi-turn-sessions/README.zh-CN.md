@@ -77,7 +77,7 @@ CLI 是一个进程内的 harness:对同一个 registry 依次运行一串 `(con
 | 重启 | `conversation-a` | `created`,size 1 | 否 | 追问是哪个订舱号 |
 
 - **turn 计数就是复用的证据。** `conversation-a` 的追问是 `turn #3`;`conversation-b` 和重启后的 `conversation-a`
-  都从 `turn #1` 开始。计数器在订阅这个 agent 的 logger 里。
+  都从 `turn #1` 开始。计数器在订阅这个 agent 的 logger 里,数的是模型调用次数(一次工具调用会多算一次),不是用户消息数,所以第二条用户消息可以是 `turn #3`。
 - **追问不需要工具调用**,因为工具结果已经在 transcript 里。
 - **没有任何回答编造 container。** system prompt 要求模型在没有已建立的订舱时追问;这是 prompt 行为,所以可能随模型而变。
 

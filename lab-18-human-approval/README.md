@@ -182,6 +182,4 @@ scripts/approval-demo.ts          the experiment above
 tests/                            digest/state, Postgres transactions and races, migration, HTTP with a scripted model
 ```
 
-Copied, not imported; Labs 13 and 16 were untracked at copy time, so hashes identify the source (first 16 of sha256):
-`security-context` `7355f1e0fcf29278`, `authenticator` `21922a4b2de0f27d`, `session-registry` `6fcad0fbc64bea6b`
-(Lab 16); `transcript` `55f4803ed1723cbe`, `harness-trace-logger` `f1969976dfab53aa` (Lab 13).
+Copied, not imported, from Labs 13 and 16 (see [REFERENCE.md](REFERENCE.md) for provenance).
