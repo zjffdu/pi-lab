@@ -149,6 +149,7 @@ Answer 1–3 before running the demo:
 
 ## Good to know
 
+- **Status:** deterministic checks pass (167 tests) on Pi `1.1.0`. Labs 15, 17, 18 and 19 were not built on (not jointly verified). An independent review was done and its MEDIUM findings fixed. The demo output is withheld pending the learner's prediction; no live-model run and no real read-only endpoint check were done.
 - **Pins:** `pi-durable`, `pi-ai`, `chord` `1.1.0`; default model `deepseek-flash`. `pi-durable` is experimental.
 - **Model-call limits are not dispatch guarantees.** No `pi-durable` hook can end a run, so the turn and context limits
   call `root.abort()`, which races the next request. The context limit therefore also replaces an over-limit request's

@@ -4,7 +4,7 @@
 
 助手如何把文档和 message 当作证据来使用，同时保住授权边界和 action 边界？
 
-Roadmap：[ROADMAP-PHASE-3.md](../ROADMAP-PHASE-3.md)，Lab 19。
+Roadmap：[ROADMAP-PHASE-3.md](../docs/design/ROADMAP-PHASE-3.md)，Lab 19。
 
 ## 先读这里
 
@@ -174,6 +174,7 @@ summary 降级、guard 对被禁值和不可读 envelope 的 withhold、它的 `
 
 ## 局限
 
+- **前置 lab：** 跳过了 Lab 15 和 Lab 17，也没有使用 Lab 18 的持久化审批（未联合验证）。
 - **结构性的，而非行为性的。** 一个服从被注入文本的 model 仍然可以*说*具有误导性的话，或者在它自己的 role 之内提出一个变更（一个 pending 的 proposal，归属于真实的 requester）。
   已经确立的是：注入无法改变谁在提问、有哪些 tool、approval 是否存在，或者数据可以被发送到哪里。envelope 和 system-prompt 的规则是针对 model 行为的缓解措施，而不是保证。
 - **Summary 仍然对 model 可见。** 把 summary 降级成一个 `derived` envelope 改变了它被标注的信任度，但它是以 `user` 角色的 message 投递的，因为 Pi 没有为它提供其他角色。

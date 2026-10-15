@@ -138,6 +138,7 @@ Answer 1–3 before running the gate ([WORKSHEET.md](WORKSHEET.md); the predicti
 
 ## Good to know
 
+- **Status:** deterministic checks pass (90 tests, Pi `1.1.0`). Labs 15, 17, 19, 20 and 21 were not built on and no shared runtime is imported (not jointly verified). An independent review has not been run yet. The scripted demos were run and the prediction was waived; the live judge (`evaluate:live`) was not run.
 - **Known gap:** `checkEvidence` catches a stage that was *expected and missing*, not one that was reached and
   *undeclared*. Derive `reachedStages` from a real run, or add the reverse check; question 5 exercises it.
 - **Pins:** `pi-agent-core` and `pi-ai` `1.1.0`; default model `deepseek-flash`. Only the optional live judge uses Pi.

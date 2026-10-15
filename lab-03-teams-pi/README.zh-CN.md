@@ -23,7 +23,7 @@ Teams message
 本 lab 的 non-goals：
 
 - 不止一个 tool（仍然只有来自 [Lab 01](../lab-01-pi-agent-loop/README.zh-CN.md) 的 `get_booking`）
-- 不按 conversation 复用 agent，也没有多轮上下文——每条消息都用一个全新的 agent（那是 [Lab 05](../ROADMAP.md)）
+- 不按 conversation 复用 agent，也没有多轮上下文——每条消息都用一个全新的 agent（那是 [Lab 05](../lab-05-multi-turn-sessions/README.md)）
 - 不处理并发的用户消息
 - 不部署到真实 Teams tenant，不做 SSO，不做持久化
 

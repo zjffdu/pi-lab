@@ -120,6 +120,7 @@ Answer 1–4 before running the demo, the rest after:
 
 ## Good to know
 
+- **Status:** deterministic checks pass (82 tests). Lab 15 was not built on, so the two labs are not jointly verified. Experiment verification and learner completion are pending; no real Teams/Entra evidence exists.
 - **Lab 15 was skipped, on the learner's decision.** This lab uses its own minimal harness (one read tool, no policy
   hooks, no audit log, no telemetry), so none of Lab 15's joint guarantees are claimed.
 - **Real Teams/Entra authentication is not covered**, and nothing local implies it. In a real integration, channel

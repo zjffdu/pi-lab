@@ -1,12 +1,21 @@
 # Pi Learning Labs — Phase 2 Roadmap
 
+> **Design document, written before the labs were built — not maintained.** It records the original plan for
+> Phase 2 (Labs 07–14): core questions, scope, exclusions, prediction gates, failure injections, and acceptance criteria. Names
+> and status may differ from the code. For what exists now, read [the learning path](../learning-path.md) and each
+> lab's own README. API names are from the Pi version the plan was written against.
+
 This roadmap defines Labs 07–14. Phase 1 established Pi's in-memory execution
 semantics: the agent loop, transport boundaries, tool selection, multi-turn state,
 failures, steering, follow-up, and parallel tool execution. Phase 2 moves from an
 ephemeral `Agent` to a durable, inspectable, and governable agent runtime.
 
-Last reviewed against `@earendil-works/pi-agent-core` `0.85.1` and the current Pi
-repository documentation: 2026-09-17.
+Last reviewed against the repository state: 2026-10-15. This roadmap was written against Pi `0.85.1`; Labs
+07–14 are now built on `@earendil-works/pi-durable` `1.1.0` (with `chord` and `pi-ai`; Lab 14 also pins
+`@earendil-works/pi-telemetry`).
+
+> **Reading the lab sections.** The API names inside them are the original `0.85.1` names. The labs use the
+> `pi-durable` `1.1.0` equivalents listed in the [terminology table](../learning-path.md#terminology-the-original-plan-vs-pi-durable-11).
 
 ## Phase 2 outcome
 
@@ -30,28 +39,14 @@ failure, and inspectable local evidence.
 
 ## Repository contract
 
-- Keep one self-contained Node.js project per lab at the repository root.
-- Use directories named `lab-07-*` through `lab-14-*`; do not add an intermediate
-  `labs/` directory.
-- Give every lab its own pinned dependencies, lockfile, source, tests, fixtures,
-  README, and ignored runtime-data directory.
-- Keep all session state, traces, fixtures, and evaluation artifacts local. Do not
-  introduce a hosted database, remote trace backend, or cloud artifact store.
-- Continue using the small shipment fixtures from Phase 1 unless a lab explicitly
-  needs one additional local fixture to expose its target concept.
-- Keep completed labs runnable. Do not convert earlier labs into shared packages or
-  silently upgrade their dependencies.
-- Work on one active lab at a time. Do not scaffold or implement a later lab unless
-  the user explicitly asks.
-- Start every experiment with a written prediction. Do not reveal the expected
-  learner explanation before that prediction is recorded.
-- Separate deterministic tests from bounded live-model experiments.
-- Pin Pi package versions within a lab and revalidate the official API when that lab
-  begins. Do not assume a later Pi version preserves `0.85.1` behavior.
-- Treat JSONL files as evidence, not as files to hand-edit during an experiment.
-- Keep secrets in ignored `.env` files. Commit only `.env.example` files with empty
-  values.
-- Commit only when the user explicitly requests it.
+The rules shared by every lab are in the root [Working agreement](../../README.md#working-agreement). Phase 2 adds:
+
+- Use directories named `lab-07-*` through `lab-14-*`.
+- Keep all session state, traces, fixtures, and evaluation artifacts local: no hosted database, remote trace
+  backend, or cloud artifact store.
+- Continue using the small shipment fixtures from Phase 1 unless a lab needs one additional local fixture to
+  expose its target concept.
+- Pin Pi package versions within a lab and do not assume a later Pi version preserves earlier behavior.
 
 ## Project layout
 
@@ -74,38 +69,14 @@ one lab and see the complete experiment without resolving a hidden shared runtim
 
 ## Status
 
-| Lab | Focus | Status |
-| --- | --- | --- |
-| 07 | Durable Harness Session | Complete |
-| 08 | Crash Recovery | Complete |
-| 09 | Tool Replay Safety | Complete |
-| 10 | Context Compaction | Complete |
-| 11 | Session Tree | Complete |
-| 12 | Context Projection | Complete |
-| 13 | Tool Governance | Complete |
-| 14 | Telemetry and Evaluation | Complete |
+See the status table in [the learning path](../learning-path.md#status).
 
-Directory presence is not evidence of completion. A lab is complete only when its
-acceptance criteria have current evidence recorded in that lab's README.
+## Learning loop
 
-## Standard learning loop
-
-Every Phase 2 lab follows this sequence:
-
-1. Read the core question, boundaries, vocabulary, and recovery assumptions.
-2. Record predictions before running the new behavior.
-3. Implement the smallest path that exposes one runtime concept.
-4. Run deterministic type checks and tests.
-5. Run one bounded live-model happy path when the concept requires a model.
-6. Run the defined contrast, restart, failure, or policy-denial experiment.
-7. Inspect the durable entries, operation result, events, or telemetry rather than
-   judging success only from the final answer.
-8. Explain the observation in the learner's own words.
-9. Record commands, evidence, and unresolved uncertainty in the lab README.
-
-For process-crash experiments, use a deterministic parent test harness that waits
-for a named checkpoint before terminating the child process. Do not depend on human
-timing or arbitrary sleeps as the proof of recovery behavior.
+Every Phase 2 lab follows the [standard learning loop](../../README.md#standard-learning-loop), inspecting durable
+entries, operation results, events, or telemetry rather than judging only the final answer. For process-crash
+experiments, a deterministic parent test waits for a named checkpoint before terminating the child; it does not
+depend on human timing or arbitrary sleeps.
 
 ---
 
@@ -656,7 +627,7 @@ Lab 07 durable completed history
 ## Topics intentionally deferred until after Lab 14
 
 - SQLite session backend and storage-backend performance comparisons.
-- `SessionRepo.fork()` into a separate session file.
+- Forking into a separate session file (Lab 11 uses a second conversation in the same storage).
 - Real Teams sideloading, tenant authentication, Entra SSO, delegated tokens, OBO,
   and production RBAC.
 - External shipment APIs, Databricks, file ingestion, sandboxing, and artifact stores.
@@ -679,31 +650,12 @@ Revalidate these sources when beginning each lab:
 - [Pi evals README](https://github.com/earendil-works/pi/blob/main/packages/evals/README.md)
 - [Pi package index](https://github.com/earendil-works/pi/tree/main/packages)
 
-The local `0.85.1` type declarations are the implementation baseline for this roadmap.
-If official `main` has moved ahead when a lab begins, either keep the lab pinned to
-`0.85.1` and use its packaged declarations, or explicitly plan and verify a version
-upgrade before implementation. Do not mix APIs from two versions silently.
+The implementation baseline is the packaged type declarations of the version a lab pins (`pi-durable` `1.1.0` for
+Labs 07–14). The `pi-durable` README marks it Experimental, so its API can change without notice. Do not mix APIs
+from two versions silently.
 
 ## New-session handoff
 
-Use this sequence when starting or resuming a Phase 2 lab:
-
-1. Read this entire `ROADMAP-PHASE-2.md`.
-2. Read the root `README.md`, Phase 1 `ROADMAP.md`, and the active lab README.
-3. Inspect Git status and preserve unrelated or untracked work.
-4. Verify the preceding lab's recorded evidence; do not infer completion from its
-   directory or source files.
-5. Revalidate the exact Pi package version and APIs needed by the active lab.
-6. Restate the active lab's core question, scope, exclusions, prediction gate, failure
-   injection, and verification plan.
-7. Stop before implementation if the learner has not supplied the required prediction,
-   unless the user explicitly overrides that gate.
-8. Implement only the active lab and record actual evidence after verification.
-
-Suggested opening request for a future session:
-
-```text
-Read ROADMAP-PHASE-2.md and the active lab documents. We are starting Lab NN.
-Do not implement later labs. First restate the core question, scope, prediction
-gate, failure injection, and verification plan, then guide me through the lab.
-```
+Follow [Starting or resuming a lab](../../README.md#starting-or-resuming-a-lab), reading this roadmap as the phase
+roadmap. Phase 2 adds: restate the lab's recovery assumptions along with its failure injection, and revalidate the
+exact Pi package version the lab pins.

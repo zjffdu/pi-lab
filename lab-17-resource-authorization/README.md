@@ -133,6 +133,7 @@ Answer 1–3 before running the demo:
 
 ## Good to know
 
+- **Status:** deterministic checks pass (143 tests). Lab 15 was not built on (not jointly verified). The local experiments are done; real OBO and a live model were not run, and the prediction was waived.
 - **Not established here:** real on-behalf-of token exchange (the delegated token comes from a local stand-in, so
   only audience, scope and delegation checks against a local mock are covered); real Teams/Entra identity; a live
   model; Lab 15's joint guarantees (that lab was skipped when this one was built).

@@ -124,6 +124,7 @@ npx vitest run -t "known gap"                       # 1 passed：旧 history 仍
 
 ## 值得知道的
 
+- **状态：** 确定性检查通过（143 个测试）。没有建立在 Lab 15 之上（未联合验证）。本地实验已完成；没有运行真实 OBO 和 live model，预测已豁免。
 - **这里没有建立：** 真实的 on-behalf-of token exchange（delegated token 来自本地 stand-in，所以只覆盖了针对本地 mock 的
   audience、scope、delegation 检查）；真实的 Teams/Entra 身份；live model；Lab 15 的联合保证（建本 lab 时该 lab 被跳过）。
 - **已知缺口，归属 Lab 19：** 已在 session 里的内容，即使用户已失去该 booking 的访问权，仍会被重放给 model。有一条 characterization test 固定了这一点。

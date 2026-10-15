@@ -135,6 +135,7 @@ npm run dev:trace                                                    # 同 dev�
 
 ## 值得了解
 
+- **状态：** 确定性检查通过（82 个测试）。没有使用 Lab 15 和 Lab 17（未联合验证）。脚本化演示已运行；预测已豁免，未做 live-model 运行。
 - **Lab 15 和 17 被跳过了，这是 learner 的决定。** Lab 17 是本 lab 在 roadmap 上的前置。本 lab 用的是自己的极简 role 检查
   （[src/policy.ts](src/policy.ts)）：operator 提出，approver 决定，没有人批准自己的 proposal。它没有逐 resource 的
   ownership，也没有 policy 版本管理，所以不声明 Lab 17 的任何保证。

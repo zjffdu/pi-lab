@@ -5,7 +5,7 @@ English | [中文](README.zh-CN.md)
 How can the assistant use documents and messages as evidence while preserving authorization and
 action boundaries?
 
-Roadmap: [ROADMAP-PHASE-3.md](../ROADMAP-PHASE-3.md), Lab 19.
+Roadmap: [ROADMAP-PHASE-3.md](../docs/design/ROADMAP-PHASE-3.md), Lab 19.
 
 ## Read this first
 
@@ -232,6 +232,7 @@ now checks which layer refused).
 
 ## Limitations
 
+- **Earlier labs:** Labs 15 and 17 were skipped and Lab 18's durable approvals were not used (not jointly verified).
 - **Structural, not behavioral.** A model that obeys injected text can still *say* misleading things
   or propose a change within its own role (a pending proposal, attributed to the real requester). What
   is established is that the injection cannot change who is asking, what tools exist, whether an

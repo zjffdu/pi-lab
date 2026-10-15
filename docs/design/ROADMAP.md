@@ -1,22 +1,23 @@
 # Pi Learning Labs Roadmap
 
+> **Design document, written before the labs were built — not maintained.** It records the original plan for
+> Phase 1 (Labs 01–06): core questions, scope, exclusions, prediction gates, failure injections, and acceptance criteria. Names
+> and status may differ from the code. For what exists now, read [the learning path](../learning-path.md) and each
+> lab's own README. API names are from the Pi version the plan was written against.
+
 This roadmap defines six independent projects that build one mental model at a time, from the Pi core loop to Teams transport, multi-tool reasoning, conversation state, and concurrency.
 
-Last reviewed against current SDK documentation: 2026-09-17.
+Last reviewed against the repository state: 2026-10-15. Labs 01 and 03–06 are on `pi-agent-core` / `pi-ai` `1.1.0`;
+Lab 02 has no Pi dependency.
 
 ## Repository contract
 
-- Keep one Git repository with one self-contained project per lab at the repository root.
-- Use directories named `lab-01-*` through `lab-06-*`; do not add an intermediate `labs/` directory.
-- Give every lab its own `package.json`, lockfile, source, tests, fixtures, and README.
-- Keep completed labs runnable. Do not turn earlier labs into shared packages or silently upgrade their dependencies.
-- Work on one active lab at a time. Do not scaffold or implement a later lab unless the user explicitly asks.
-- Start each experiment with a written prediction. Do not publish the expected learner answer before the prediction is recorded.
-- Separate deterministic checks from live model or Teams smoke tests.
-- Pin SDK versions and revalidate current external documentation when a new lab starts.
-- Keep secrets in ignored `.env` files. Commit only `.env.example` files with empty values.
+The rules shared by every lab (one project per lab, pinned versions, predictions before results, deterministic
+checks separate from live runs, secrets, commit policy) are in the root
+[Working agreement](../../README.md#working-agreement). Phase 1 adds:
+
+- Use directories named `lab-01-*` through `lab-06-*`.
 - Use local fixtures until a later roadmap explicitly introduces an external data system.
-- Commit only when the user explicitly requests it.
 
 ## Project layout
 
@@ -36,31 +37,13 @@ Do not introduce a shared runtime package during these six labs. A small amount 
 
 ## Current status
 
-| Lab | Focus | Status |
-| --- | --- | --- |
-| 01 | Pi Agent Loop | Implemented and verified |
-| 02 | Teams Echo | Implemented and verified |
-| 03 | Teams to Pi | Implemented and verified |
-| 04 | Multi-tool Investigation | In progress |
-| 05 | Multi-turn Sessions | In progress |
-| 06 | Failures and Concurrency | Implemented and verified |
+See the status table in [the learning path](../learning-path.md#status).
 
-Directory presence is not evidence of completion. A lab is complete only when all of its acceptance criteria have current verification evidence.
+## Learning loop
 
-## Standard learning loop
-
-Every lab follows the same sequence:
-
-1. Read the lab goal, boundaries, and vocabulary.
-2. Record predictions before running the new behavior.
-3. Implement the smallest path that exposes the target concept.
-4. Run deterministic type checks and tests.
-5. Run one bounded live happy-path smoke test.
-6. Inject the lab's defined failure or contrast case.
-7. Explain the observed trace in the learner's own words.
-8. Record evidence and unresolved uncertainty in the lab README.
-
-The learner explanation is part of the acceptance criteria. A green command without a correct mental model is not sufficient.
+Every lab follows the [standard learning loop](../../README.md#standard-learning-loop). In Phase 1 the learner's
+explanation of the observed trace is part of the acceptance criteria: a green command without a correct mental
+model is not sufficient.
 
 ---
 
@@ -95,7 +78,7 @@ user prompt
 - Teams and HTTP transport.
 - Multiple tools.
 - Multi-turn conversation state.
-- Persistent `Session` storage and `AgentHarness`.
+- Durable session storage and a durable harness (Phase 2).
 - Steering, follow-up, and parallel tool execution.
 
 ### Prediction gate
@@ -117,7 +100,7 @@ Predict the number of LLM turns, the location of the tool result in the transcri
 
 ### Project
 
-[Lab 01 — Observe the Pi Agent Loop](lab-01-pi-agent-loop/README.md)
+[Lab 01 — Observe the Pi Agent Loop](../../lab-01-pi-agent-loop/README.md)
 
 ---
 
@@ -327,7 +310,7 @@ conversation B -> Agent B -> transcript B
 ### Explicitly excluded
 
 - Database or file-backed session persistence.
-- Persistent `Session` storage, `AgentHarness`, SQLite, compaction, and recovery.
+- Durable session storage, a durable harness, compaction, and recovery (Phase 2).
 - Simultaneous messages in one conversation; that belongs to Lab 06.
 - SSO and authorization identity.
 
@@ -399,7 +382,7 @@ Request the per-container events (a booking can have several containers) and por
 - Distributed workers and workflow engines.
 - Database-backed operation state.
 - Production retry, rate-limit, and idempotency policies.
-- `AgentHarness`; it is the natural next topic after these six labs.
+- A durable harness; it is the first topic of Phase 2.
 
 ### Prediction gate
 
@@ -418,17 +401,14 @@ Predict the ordering of start, end, tool-result, steering, follow-up, and `agent
 
 ## After Lab 06
 
-Continue with [Phase 2 — Durable Agent Runtime](ROADMAP-PHASE-2.md) only after all
-six Phase 1 labs are complete. Phase 2 introduces these topics one at a time:
+Continue with [Phase 2 — Durable Agent Runtime](ROADMAP-PHASE-2.md) only after all six Phase 1 labs are complete.
+It adds durable sessions, crash recovery, tool replay safety, context compaction, session trees, context
+projection, tool governance, and telemetry, one concept per lab. Phase 3
+([enterprise scenario](ROADMAP-PHASE-3.md)) then adds identity, authorization, approvals, untrusted content,
+connector reliability, durable external effects, and release gates. Real Teams sideloading, Entra SSO, and
+production data systems stay outside both phases (see Phase 3's list of later tracks).
 
-- persistent `Session` storage with `JsonlSessionRepo`
-- durable `AgentHarness`
-- SQLite or another session backend
-- real Teams sideloading and tenant authentication
-- Entra SSO, delegated tokens, OBO, and RBAC
-- external shipment APIs, Databricks, files, sandboxing, or artifacts
-
-Each future lab should add one of these concepts, not several at once.
+Each lab adds one of these concepts, not several at once.
 
 ## Documentation baseline
 
@@ -440,21 +420,5 @@ Revalidate these sources when beginning a new lab because SDK behavior can chang
 
 ## New-session handoff
 
-Use this sequence when another session starts or resumes a lab:
-
-1. Read this entire `ROADMAP.md`.
-2. Read the root `README.md`.
-3. Read the active lab's `README.md` and architecture document if present.
-4. Inspect current Git status and preserve unrelated or untracked work.
-5. Verify the previous lab's stated completion evidence; do not infer completion from directory presence.
-6. Restate the active lab's core question, scope, exclusions, predictions, and verification plan.
-7. Stop before implementation if the learner has not supplied the required prediction, unless the user explicitly overrides that gate.
-8. Implement only the active lab and record actual evidence after verification.
-
-Suggested opening request for a future session:
-
-```text
-Read ROADMAP.md and the active lab documents. We are starting Lab NN.
-Do not implement later labs. First restate the scope, prediction gate,
-and verification plan, then guide me through the lab.
-```
+Follow [Starting or resuming a lab](../../README.md#starting-or-resuming-a-lab), reading this roadmap as the phase
+roadmap. Phase 1 adds nothing to it.

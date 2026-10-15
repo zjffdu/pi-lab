@@ -4,7 +4,7 @@
 
 如果下游系统已经完成了一个动作，但它的响应丢了，应用如何避免重复 effect，并确定真实的 outcome？
 
-Roadmap：[ROADMAP-PHASE-3.md](../ROADMAP-PHASE-3.md)，Lab 21（一个 lab 内连续两个实验）。
+Roadmap：[ROADMAP-PHASE-3.md](../docs/design/ROADMAP-PHASE-3.md)，Lab 21（一个 lab 内连续两个实验）。
 
 ## 先读这里
 
@@ -231,6 +231,7 @@ pending --claim(deliver)--> in_flight --applied-------------------------> succee
 
 ### 已知限制
 
+- **前置 lab：** 没有建立在 Lab 15、17、19 之上，也没有复用 Lab 20 的 connector 代码（未联合验证）。
 - Lease 和 backoff 使用 worker 自己的时钟。不同主机上、时钟有偏差的 worker 会缩短或延长 lease；*状态*的正确性由 token 保护，但及时性没有。生产版本应从数据库取时间。
 - 以 `confirmed_applied` 解决一行时，会记录复核者的报告，但本地视图永远不会被往回拨；审计事件会说明视图是否移动过。
 - 对不幂等的 receiver，lookup 报告最新的 effect 及 effect 数量；数量正是暴露重复 effect 的依据。

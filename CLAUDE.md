@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A sequence of small, independent, self-contained TypeScript/Node.js labs for learning the Pi agent SDK
 (`@earendil-works/pi-agent-core` / `@earendil-works/pi-ai`) one runtime concept at a time — from the bare
 agent loop, through Teams transport, multi-tool reasoning, multi-turn sessions, and failure/concurrency
-handling (Phase 1, labs 01–06), to a durable `AgentHarness` runtime with crash recovery, tool-replay
+handling (Phase 1, labs 01–06), to a durable `pi-durable` runtime with crash recovery, tool-replay
 safety, context compaction, session trees, and context projection (Phase 2, labs 07–14), then to an
 enterprise-assistant reference scenario (Phase 3, labs 15–22). Pi 1.1 migrations are done in place, so
 a lab's directory name never carries a version suffix (see the pin rule below for which labs are on which
@@ -19,38 +19,81 @@ limited duplication across labs is intentional so each lab stays independently i
 
 ## Read before working in a lab
 
-1. Root [README.md](README.md) — lists all labs and links to the roadmaps.
-2. [ROADMAP.md](ROADMAP.md) (Phase 1, labs 01–06), [ROADMAP-PHASE-2.md](ROADMAP-PHASE-2.md) (Phase 2,
-   labs 07–14), or [ROADMAP-PHASE-3.md](ROADMAP-PHASE-3.md) (Phase 3, labs 15–22; a plan, not evidence of
-   implementation) — the canonical source for each lab's core question, scope, explicit exclusions,
-   prediction gate, failure injections, and completion criteria.
-3. The active lab's own `README.md` (and an `ARCHITECTURE.md` if one exists in that lab — most don't).
+1. Root [README.md](README.md) — lists all labs, their prerequisites, and the **Working agreement** (repository
+   contract, learning loop, how to start or resume a lab). That section is the single copy of the shared rules.
+2. [docs/learning-path.md](docs/learning-path.md) — the order of the labs, what each adds, the `0.85.1` →
+   `pi-durable` 1.1 terminology table, and the status of every lab. The original per-phase plans (core question,
+   scope, exclusions, prediction gate, failure injections, acceptance criteria) are design history in
+   [docs/design/](docs/design/): written before the labs were built, not maintained, and not authoritative for
+   what the code does. Use them as the starting point when adding a new lab.
+3. The active lab's own `README.md`, and for labs 15–22 its `WORKSHEET.md` (blank learner worksheet),
+   `REFERENCE.md` (reference explanation — do not read before the learner's prediction is recorded or waived),
+   and `RUNBOOK.md` where present.
 
-## Repository-wide rules (from the roadmaps' "Repository contract" sections)
+## Repository-wide rules
 
-- One self-contained project per lab at the repo root; no intermediate `labs/` directory.
-- Do not turn earlier labs into a shared package, silently upgrade their dependencies, or otherwise
-  modify a lab you were not asked to work on.
-- Work on one active lab at a time. Do not scaffold or implement a later lab unless explicitly asked.
-- Every experiment starts with a written prediction from the learner (turn count, event ordering, failure
-  behavior, etc.) — do not reveal the expected answer before that prediction is recorded.
+The full repository contract is the root README's Working agreement. The ones to keep in mind while editing:
+
+- Do not turn earlier labs into a shared package, silently upgrade their dependencies, or otherwise modify a lab
+  you were not asked to work on. Work on one active lab at a time; do not scaffold a later lab unless asked.
+- Every experiment starts with a written prediction from the learner — do not reveal the expected answer before it
+  is recorded (or waived).
 - Keep deterministic type-checks/tests free of live model calls or Teams calls; live smoke tests are a
   separate, explicitly-bounded step (`npm run agent -- "..."`, `npm run dev` + Playground, `npm run demo:*`).
 - Secrets live only in each lab's ignored `.env`; commit only `.env.example` with empty values.
 - JSONL session/attempt/outbox files under a lab's gitignored runtime-data directory (e.g. `session-data/`,
   `runtime-evidence/`) are evidence of one learner's run, not fixtures — never hand-edit or commit them.
-- Pi SDK versions are pinned per lab with exact versions, and a lab is migrated in place (no parallel
-  `-pi-1.1` copy). Current state: Labs 01 and 03–06 are on `pi-agent-core` / `pi-ai` `1.1.0`; Lab 02 does not
-  depend on Pi; Labs 07, 08, 09, 10, 11, 12, 13, and 14 are on `@earendil-works/pi-durable` `1.1.0` (rewritten, with `chord` and `pi-ai`;
-  none depends on `pi-agent-core`; Lab 14 also pins `@earendil-works/pi-telemetry` `1.1.0`); Lab 16 is on `pi-durable` `1.1.0` too (with `chord`, `pi-ai`, and `jose`; no `pi-agent-core`; the in-run `beforeRequest` boundary only records, so its blocking check is a pre-flight scan before `submit()`); Lab 17 is on `pi-durable` `1.1.0` as well (with `chord`, `pi-ai`, and `jose`; no `pi-agent-core`; it replaces the stored tool offer with `configure({ tools })` on every operation, before any `submit()` or `resume()`); Lab 15 is on `pi-durable` `1.1.0` too (with `chord`, `pi-ai`, and `pi-telemetry`; no `pi-agent-core`; it composes the Lab 12–14 pieces, and because no 1.1 seam can stop a provider request its egress layers are a write-time check, a pre-flight scan, and a `beforeRequest` backstop that *withholds* rather than blocks); Lab 18 is on `pi-durable` `1.1.0` too (with `chord`, `pi-ai`, `jose`, and `pg`; no `pi-agent-core`; the propose tool is closed over each request's `SecurityContext` in a registry rebuilt per request, because a conversation stores only tool names and `root({ agent })` applies only at creation; two requests on one session, each with its own `openNodeJsonlStorage` handle and its own `Harness`, gave two user messages the same entry id and forked the history while both requests still answered 200, and a storage reads its entries when it is opened, so `ChatService` queues requests per session and opens the storage *inside* the queue; `pi-durable` does not document this); Lab 20 is on `pi-durable` `1.1.0` too (with `chord`, `pi-ai`, and `jose`; no `pi-agent-core`; no 1.1 hook can end a run, so its turn and context limits call `root.abort()` from `afterTools` / `beforeRequest`, which *races* the next request and has been seen to lose with JSONL storage, hence `beforeRequest` also replaces an over-limit request's messages with a placeholder and the guarantee is what the request carries, not whether it is sent; cancellation is `root.abort()`, never a cancelled `Context` given to `wait()`, which stops only the wait; a tool's `context.abortSignal` also fires after `execute()` returns, so a listener flag proves nothing; there is no `maxTokens` setting, so the output cap is a Proxy over the provider's `getModels()`; `settings.stream.maxRetries` is pinned to 0 so only `settings.retry` retries model calls; the stored tool offer is replaced with `configure({ tools })` on every request and read back; requests are queued per session; a session with unsettled submissions is refused); Lab 19 is on `pi-durable` `1.1.0` too (with `chord`, `pi-ai`, `jose`, and `dotenv`; no `pi-agent-core`; no hook can *stop* a provider request, so its egress layers are a pre-`submit()` preflight, a write-time gate inside the document tools, and a `beforeRequest` backstop that *withholds*; a summarization request does not pass through `beforeRequest`, but `beforeCompact` runs for manual, threshold, and overflow compaction and can `decline`, which is the summarizer's only gate; a compaction summary is a *user-role* message on a `pi.compaction` entry, so derivation is decided by entry kind, not message role; revoking a role is enforced by the request's registry alone, so only a *grant* shows whether `configure({ tools })` re-applied the offer); Lab 22 is on `pi-agent-core` / `pi-ai` `1.1.0` too (only its optional live judge uses Pi; its lockfile is Lab 01's with the two `name` fields changed, proven with `npm ci` in a clean copy); Lab 21 has no Pi
-  dependency (it uses `pg`). Revalidate the SDK against the pinned version before starting a lab rather than assuming behavior
-  carries over, and see "Pi 1.1 standard" below before writing or porting anything to `1.1.x`.
 - Commit only when the user explicitly asks.
+
+## Pinned versions per lab
+
+Pi SDK versions are pinned per lab with exact versions, and a lab is migrated in place (no parallel `-pi-1.1`
+copy). Revalidate the SDK against the pinned version before starting a lab rather than assuming behavior carries
+over, and see "Pi 1.1 standard" below before writing or porting anything to `1.1.x`.
+
+- Labs 01 and 03–06: `pi-agent-core` / `pi-ai` `1.1.0`.
+- Lab 02: no Pi dependency.
+- Labs 07–14: `@earendil-works/pi-durable` `1.1.0` (rewritten, with `chord` and `pi-ai`; none depends on
+  `pi-agent-core`). Lab 14 also pins `@earendil-works/pi-telemetry` `1.1.0`.
+- Lab 15: `pi-durable` `1.1.0` (with `chord`, `pi-ai`, and `pi-telemetry`; no `pi-agent-core`). It composes the
+  Lab 12–14 pieces, and because no 1.1 seam can stop a provider request its egress layers are a write-time check,
+  a pre-flight scan, and a `beforeRequest` backstop that *withholds* rather than blocks.
+- Lab 16: `pi-durable` `1.1.0` (with `chord`, `pi-ai`, and `jose`; no `pi-agent-core`). The in-run `beforeRequest`
+  boundary only records, so its blocking check is a pre-flight scan before `submit()`.
+- Lab 17: `pi-durable` `1.1.0` (with `chord`, `pi-ai`, and `jose`; no `pi-agent-core`). It replaces the stored tool
+  offer with `configure({ tools })` on every operation, before any `submit()` or `resume()`.
+- Lab 18: `pi-durable` `1.1.0` (with `chord`, `pi-ai`, `jose`, and `pg`; no `pi-agent-core`). The propose tool is
+  closed over each request's `SecurityContext` in a registry rebuilt per request, because a conversation stores
+  only tool names and `root({ agent })` applies only at creation. Two requests on one session, each with its own
+  `openNodeJsonlStorage` handle and its own `Harness`, gave two user messages the same entry id and forked the
+  history while both requests still answered 200, and a storage reads its entries when it is opened, so
+  `ChatService` queues requests per session and opens the storage *inside* the queue; `pi-durable` does not
+  document this.
+- Lab 19: `pi-durable` `1.1.0` (with `chord`, `pi-ai`, `jose`, and `dotenv`; no `pi-agent-core`). No hook can
+  *stop* a provider request, so its egress layers are a pre-`submit()` preflight, a write-time gate inside the
+  document tools, and a `beforeRequest` backstop that *withholds*. A summarization request does not pass through
+  `beforeRequest`, but `beforeCompact` runs for manual, threshold, and overflow compaction and can `decline`,
+  which is the summarizer's only gate. A compaction summary is a *user-role* message on a `pi.compaction` entry,
+  so derivation is decided by entry kind, not message role. Revoking a role is enforced by the request's registry
+  alone, so only a *grant* shows whether `configure({ tools })` re-applied the offer.
+- Lab 20: `pi-durable` `1.1.0` (with `chord`, `pi-ai`, and `jose`; no `pi-agent-core`). No 1.1 hook can end a run,
+  so its turn and context limits call `root.abort()` from `afterTools` / `beforeRequest`, which *races* the next
+  request and has been seen to lose with JSONL storage, hence `beforeRequest` also replaces an over-limit
+  request's messages with a placeholder and the guarantee is what the request carries, not whether it is sent.
+  Cancellation is `root.abort()`, never a cancelled `Context` given to `wait()`, which stops only the wait. A
+  tool's `context.abortSignal` also fires after `execute()` returns, so a listener flag proves nothing. There is
+  no `maxTokens` setting, so the output cap is a Proxy over the provider's `getModels()`;
+  `settings.stream.maxRetries` is pinned to 0 so only `settings.retry` retries model calls. The stored tool offer
+  is replaced with `configure({ tools })` on every request and read back; requests are queued per session; a
+  session with unsettled submissions is refused.
+- Lab 21: no Pi dependency (it uses `pg`).
+- Lab 22: `pi-agent-core` / `pi-ai` `1.1.0` (only its optional live judge uses Pi; its lockfile is Lab 01's with
+  the two `name` fields changed, proven with `npm ci` in a clean copy).
 
 ## Pi 1.1 standard
 
-Applies to any lab pinned to `@earendil-works/pi-agent-core` / `pi-ai` `1.1.x`. Labs on `0.85.1` keep their
-own behavior; do not retrofit these rules onto them. Derived by diffing the two versions' type declarations
+Applies to any lab pinned to `@earendil-works/pi-agent-core` / `pi-ai` `1.1.x`; no lab is on `0.85.1` any more, so
+the `0.85.1` comparisons below are historical. Derived by diffing the two versions' type declarations
 and running scripted probes against both, not from a changelog (the packages ship none).
 
 - Pin `pi-agent-core` and `pi-ai` to the same exact version (`1.1.0`) and regenerate the lockfile from
@@ -202,10 +245,12 @@ message) → repeat until the model stops requesting tools. Common per-lab files
 - Booking fixtures: a booking can have several containers. Labs 01, 04, 05, 07, 08, 09, 10, 11, 12, 13, 15, 16, 17, 18, 19, and 22 model this as a non-empty
   `containerNos: string[]` validated in `isBooking`; Lab 20 serves it from its booking API as a validated non-empty, unique `containerNos` and counts a listing complete only when its container identities equal that set; Labs 03 and 06 still use a single `containerNo`.
 
-### Phase 2 labs (07–14): durable `AgentHarness` (Pi `0.85.1` API; Labs 07, 08, 09, 10, 11, 12, 13, and 14 are on `pi-durable` `1.1.0`)
+### Phase 2 labs (07–14): durable runtime on `pi-durable` `1.1.0`
 
-Swaps the ephemeral `Agent` for `AgentHarness` plus a `Session` persisted through a JSONL-backed repo, so
-runs survive process restarts and can be inspected/replayed after a crash. Common additional files:
+Swaps the ephemeral `Agent` for a durable `Harness` and `root()` conversation persisted through JSONL storage
+(`openNodeJsonlStorage`), so runs survive process restarts and can be inspected/replayed after a crash. The
+original plan's `AgentHarness` / `lane` / `Session` vocabulary maps to this API in the
+[terminology table](docs/learning-path.md#terminology-the-original-plan-vs-pi-durable-11). Common additional files:
 
 - `src/create-harness.ts` — harness construction (replaces `create-agent.ts`).
 - `src/session-store.ts` — the durable session backing store; writes land in a lab-local gitignored
@@ -213,8 +258,8 @@ runs survive process restarts and can be inspected/replayed after a crash. Commo
 - `src/harness-trace-logger.ts` — the harness-event equivalent of the Phase 1 trace logger; later labs
   extend it with recovery-specific markers (e.g. a `↺` replay marker in lab-09) that earlier Phase 2 labs
   don't need.
-- `src/checkpoint.ts`, `scripts/*-demo.ts` — lab-specific mechanics for the concept under test (crash
-  recovery, tool replay safety, compaction, session tree navigation, context projection).
+- `src/checkpoint.ts` (Labs 08–09) and `scripts/*-demo.ts` — lab-specific mechanics for the concept under test
+  (crash recovery, tool replay safety, compaction, session tree navigation, context projection).
 
 ### Teams transport labs (02, 03)
 

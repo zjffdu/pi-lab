@@ -129,6 +129,7 @@ ALLOW_LIVE_EVAL=1 npm run evaluate:live    # 真实模型；需要 .env 中的 D
 
 ## 值得知道
 
+- **状态：** 确定性检查通过（90 个测试，Pi `1.1.0`）。没有建立在 Lab 15、17、19、20、21 之上，也没有导入共享 runtime（未联合验证）。尚未做独立评审。脚本化演示已运行，预测已豁免；live judge（`evaluate:live`）未运行。
 - **已知缺口：** `checkEvidence` 能发现*预期但缺失*的阶段，发现不了*到达了但未声明*的阶段。应从真实运行派生
   `reachedStages`，或增加反向检查；第 5 题练习这一点。
 - **版本固定：** `pi-agent-core` 与 `pi-ai` `1.1.0`；默认模型 `deepseek-flash`。只有可选的 live judge 使用 Pi。

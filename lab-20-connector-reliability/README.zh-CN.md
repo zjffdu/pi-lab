@@ -138,6 +138,7 @@ npm run --silent token -- tenant-a alice                                  # 本�
 
 ## 值得知道
 
+- **状态：** 在 Pi `1.1.0` 上确定性检查通过（167 个测试）。没有建立在 Lab 15、17、18、19 之上（未联合验证）。已做独立评审，MEDIUM 级发现已修复。演示输出在学习者给出预测之前不公开；没有 live-model 运行，也没有真实只读端点检查。
 - **版本：** `pi-durable`、`pi-ai`、`chord` 均为 `1.1.0`；默认模型 `deepseek-flash`。`pi-durable` 是实验性的。
 - **model 调用的限额不是"不会发出"的保证。** `pi-durable` 里没有任何 hook 能结束一个 run，所以 turn 和 context 上限
   调用 `root.abort()`，而它和下一个请求是竞争关系。因此 context 上限还会把超限请求的消息换成一行占位文本：

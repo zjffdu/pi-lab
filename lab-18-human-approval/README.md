@@ -148,6 +148,7 @@ Answer 1–3 before running the demo:
 
 ## Good to know
 
+- **Status:** deterministic checks pass (82 tests). Labs 15 and 17 were not used (not jointly verified). The scripted demo was run; the prediction was waived and no live-model run was done.
 - **Labs 15 and 17 were skipped, on the learner's decision.** Lab 17 is this lab's roadmap prerequisite. This lab uses
   its own tiny role check ([src/policy.ts](src/policy.ts)): operators propose, approvers decide, nobody approves their
   own proposal. It has no per-resource ownership and no policy versioning, so none of Lab 17's guarantees are claimed.

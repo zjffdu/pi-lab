@@ -5,7 +5,7 @@ English | [中文](README.zh-CN.md)
 If a downstream system completes an action but its response is lost, how does the application avoid a
 duplicate effect and determine the real outcome?
 
-Roadmap: [ROADMAP-PHASE-3.md](../ROADMAP-PHASE-3.md), Lab 21 (two consecutive experiments in one lab).
+Roadmap: [ROADMAP-PHASE-3.md](../docs/design/ROADMAP-PHASE-3.md), Lab 21 (two consecutive experiments in one lab).
 
 ## Read this first
 
@@ -275,6 +275,7 @@ and session-backend migration need a later, dedicated lab based on verified publ
 
 ### Known limitations
 
+- **Earlier labs:** Labs 15, 17 and 19 were not built on, and Lab 20's connector code was not reused (not jointly verified).
 - Leases and backoff use the worker's own clock. Workers on different hosts with skewed clocks would
   shorten or lengthen leases; correctness of *state* is protected by the token, but promptness is not. A
   production version would take time from the database.

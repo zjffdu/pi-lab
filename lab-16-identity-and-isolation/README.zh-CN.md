@@ -112,6 +112,7 @@ tool result 的内容和 bearer token 从不打印。
 
 ## 值得知道
 
+- **状态：** 确定性检查通过（82 个测试）。本 lab 没有建立在 Lab 15 之上，两者没有联合验证。实验验证和学习者完成情况尚待进行；没有真实的 Teams/Entra 证据。
 - **Lab 15 被跳过了，这是学习者的决定。** 本 lab 使用自己的最小 harness（一个只读 tool，没有 policy hooks、
   audit log、telemetry），因此不声称 Lab 15 的任何联合保证。
 - **真实的 Teams/Entra authentication 没有覆盖**，任何本地结果都不能暗示它。真实集成里，channel authentication

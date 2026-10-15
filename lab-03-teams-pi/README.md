@@ -23,7 +23,7 @@ Teams message
 Non-goals for this lab:
 
 - More than one tool (still just `get_booking`, from [Lab 01](../lab-01-pi-agent-loop/README.md))
-- Conversation-scoped agent reuse or multi-turn context — every message gets a brand-new agent (that's [Lab 05](../ROADMAP.md))
+- Conversation-scoped agent reuse or multi-turn context — every message gets a brand-new agent (that's [Lab 05](../lab-05-multi-turn-sessions/README.md))
 - Concurrent user messages
 - Real Teams tenant deployment, SSO, or persistence
 

@@ -1,5 +1,10 @@
 # Pi Learning Labs — Phase 3 Roadmap
 
+> **Design document, written before the labs were built — not maintained.** It records the original plan for
+> Phase 3 (Labs 15–22): core questions, scope, exclusions, prediction gates, failure injections, and acceptance criteria. Names
+> and status may differ from the code. For what exists now, read [the learning path](../learning-path.md) and each
+> lab's own README. API names are from the Pi version the plan was written against.
+
 ## Enterprise WorkBuddy Foundations
 
 Phase 3 turns the runtime concepts from Labs 01–14 into an inspectable enterprise
@@ -15,11 +20,13 @@ employee signs in
   -> evaluates the complete execution against release criteria
 ```
 
-Planning date: 2026-09-19.
+Planned 2026-09-19; implemented afterwards as independent labs. Last reviewed against the repository state:
+2026-10-15.
 
-This document is a plan. No Phase 3 implementation or verification is claimed.
-The implementation baseline is the repository's current Pi `0.85.1` dependency.
-Revalidate the public APIs needed by each lab before implementation.
+The evidence behind each lab's status is in that lab's README and `WORKSHEET.md`. The implementation baseline is Pi `1.1.0`: `@earendil-works/pi-durable` for Labs 15–20,
+`pi-agent-core` for Lab 22's optional live judge, and no Pi dependency for Lab 21. Where a lab section below
+says `AgentHarness`, `lane`, or `Session`, read the 1.1 equivalent in the
+[terminology table](../learning-path.md#terminology-the-original-plan-vs-pi-durable-11). Revalidate the public APIs a lab needs before changing it.
 
 Read [Phase 1](ROADMAP.md), [Phase 2](ROADMAP-PHASE-2.md), and the relevant completed
 lab documents when starting or resuming work.
@@ -71,35 +78,24 @@ acceptance evidence.
 Every lab adds one primary concept and retains the relevant regression checks from
 its predecessors. Lab 21 has two consecutive experiments, completed within one lab.
 
+The chain and each lab's *Prerequisites* describe the intended dependencies. As built, several labs are
+independent projects that do not reuse their listed predecessor's code, so they are not jointly verified; the
+[status table](../learning-path.md#status) names which.
+
 ## Repository and learning contract
 
-- Keep one independent project per lab at the repository root.
-- Give each lab its own package manifest, lockfile, source, tests, fixtures, README,
-  and ignored runtime-data directory.
-- Use TypeScript, Node.js, and pinned dependency versions. Record the tested Node
-  and npm versions, and use `npm ci` for repeatable installation.
-- Copy only the verified code needed by a later lab. Record its source revision.
-  Do not introduce cross-lab runtime imports or refactor Labs 01–14 into a shared
-  package as part of this roadmap.
-- A root verification command may orchestrate independent lab checks without
-  sharing their runtime implementation.
-- Work on one active lab at a time. Do not scaffold later labs in advance.
-- Keep sessions, business state, traces, and evaluation artifacts local. Use local
-  PostgreSQL beginning with Lab 18; external services remain explicit integration
-  exercises.
-- Use synthetic fixtures. Preserve the existing separation between local storage
-  and explicitly bounded live-model experiments.
-- Keep secrets in ignored local configuration. Never include credentials or raw
-  authorization headers in logs, manifests, fixtures, or reports.
-- Keep learner predictions blank until the learner supplies them. Store reference
-  explanations separately from the worksheet.
-- An explicit learner request to skip a prediction is recorded as `waived`.
-- Preserve unrelated worktree changes. Commit only when explicitly requested.
+The rules shared by every lab are in the root [Working agreement](../../README.md#working-agreement). Phase 3 adds:
 
-### Planned project directories
+- Use TypeScript, Node.js, and pinned dependency versions. Record the tested Node and npm versions, and use
+  `npm ci` for repeatable installation.
+- Copy only the verified code a later lab needs and record its source revision. Do not refactor Labs 01–14 into a
+  shared package as part of this roadmap.
+- Use local PostgreSQL beginning with Lab 18; external services remain explicit integration exercises. Keep
+  authentication services and enterprise APIs as local test services.
+- Keep learner predictions blank until the learner supplies them, and store reference explanations separately
+  from the worksheet (`WORKSHEET.md` and `REFERENCE.md`).
 
-These names describe future projects; their presence is not an implementation task
-until that lab becomes active.
+### Project directories
 
 ```text
 pi-lab/
@@ -116,16 +112,8 @@ pi-lab/
 
 ## Status
 
-| Lab | Planning | Implementation verified | Experiment verified | Learner completed |
-| --- | --- | --- | --- | --- |
-| 15 | Planned | Rebuilt on Pi 1.1 (`pi-durable`); deterministic checks pass (90 tests; 5 of 7 criteria verified, AC4 and AC5 partial) | Scripted failure injections done; prediction waived; live-model run not performed | Pending |
-| 16 | Planned | Deterministic checks pass; Lab 15 skipped (not jointly verified) | Pending | Pending |
-| 17 | Planned | Deterministic checks pass; Lab 15 skipped (not jointly verified) | Local experiments done; real OBO not run; prediction waived | Pending |
-| 18 | Planned | Rebuilt on Pi 1.1 (`pi-durable`); deterministic checks pass (82 tests); Labs 15 and 17 not used (not jointly verified) | Scripted demo run; prediction waived; live-model run not performed | Pending |
-| 19 | Planned | Deterministic checks pass (185 tests, on Pi 1.1 `pi-durable`); Labs 15 and 17 skipped, Lab 18's durable approvals not used (not jointly verified); independent review done on the Pi 0.85.1 version (HIGH/MEDIUM fixed), not repeated after the Pi 1.1 migration | Scripted demo written, output withheld pending learner prediction; live-model run not performed; every compaction path gated by `beforeCompact`; no crash (`SIGKILL`) run | Pending |
-| 20 | Planned | Deterministic checks pass (167 tests) on Pi `1.1.0` (`pi-durable`); Labs 15, 17, 18 and 19 not built on (not jointly verified); independent review done, MEDIUM findings fixed; 81-control mutation check, 79 detected and 2 survivors understood (a redundant backstop and an unreached defensive branch) | Scripted demo written, output withheld pending learner prediction; live-model run and real read-only endpoint check not performed; model-call limits are not dispatch guarantees (abort races the request) | Pending |
-| 21 | Planned | Deterministic checks pass (71 tests, 5 consecutive full runs stable); Labs 15, 17, 19 not built on, Lab 20's connector code not reused (not jointly verified); independent review done, HIGH/MEDIUM findings fixed, fixes not re-reviewed; 35-control mutation check: 33 detected, 2 equivalent | Scripted demo written, output withheld pending learner prediction; two-process and SIGKILL experiments part of the suite; real downstream system and live model not run (none applies) | Pending |
-| 22 | Planned | Deterministic checks pass (90 tests, on Pi 1.1.0 with multi-container bookings and per-run trace files); Labs 15, 17, 19, 20 and 21 not built on, no shared runtime imported (not jointly verified); independent review not yet run | Scripted demos run (run-cases, evaluate, calibrate, release-gate, drain-demo, rollback-demo); prediction waived; live-model run (`evaluate:live`) not performed | Pending |
+The per-lab status table is in [the learning path](../learning-path.md#status). Three completion states are tracked
+separately:
 
 Implementation verification requires the deterministic checks to pass. Experiment
 verification requires the defined integration, failure, and applicable live-model
@@ -149,21 +137,15 @@ Use two tenants, three roles, and a small set of booking and document fixtures:
 Keep the business action narrow: changing one synthetic booking's status. These
 fixtures teach execution contracts, not real shipment-operation eligibility rules.
 
-### Standard learning loop
+### Learning loop
 
-1. Read the core question, scope, assumptions, and acceptance criteria.
-2. Record a prediction before seeing the experiment's result or reference explanation.
-3. Implement the smallest path that exposes the new concept.
-4. Run deterministic tests, including the relevant preceding contracts.
-5. Run the local integration and failure experiments.
-6. Run a bounded live-model or real-service check only where needed.
-7. Inspect provider requests, durable state, business effects, audit, and traces.
-8. Explain the result and answer a transfer question using a changed scenario.
-9. Record evidence, limitations, and the three completion states.
-
-Each lab supplies a blank learner worksheet covering prediction, observation,
-explanation, surprise, unresolved questions, and transfer. Runtime evidence belongs
-in an ignored directory, separate from committed fixtures and reference material.
+Phase 3 follows the [standard learning loop](../../README.md#standard-learning-loop) with these additions: the
+deterministic tests include the relevant preceding contracts; the local integration and failure experiments run
+before any bounded live check; the inspection covers provider requests, durable state, business effects, audit,
+and traces; and the learner answers a transfer question on a changed scenario. Each lab supplies a blank learner
+worksheet covering prediction, observation, explanation, surprise, unresolved questions, and transfer. Runtime
+evidence belongs in an ignored directory, separate from committed fixtures and reference material. Record the
+three completion states (implementation, experiment, learner) separately.
 
 ### Evidence manifest
 
@@ -197,17 +179,6 @@ Do not assume that every configuration seam from the core `Agent` also exists on
 Default logs contain necessary metadata. Complete payload logging is an explicit
 synthetic-fixture debugging option. Define retention and access rules for persisted
 artifacts and exclude credentials and hidden reasoning from routine telemetry.
-
-## Preparation when Lab 15 starts
-
-- Establish the exact source baseline, including uncommitted changes used by the lab.
-- Inventory the contracts being copied from Labs 07–14.
-- Add regression coverage for relevant review findings as their code is incorporated:
-  final-answer selection, branch access after reopen, audit correlation, and a required
-  lookup for an unknown booking.
-- Keep historical lab revisions separate from this integration work unless explicitly
-  included in the active task.
-- Establish the worksheet, evidence manifest, and independent-lab verification entrypoint.
 
 ---
 
@@ -725,8 +696,9 @@ decisions. CI can use a local runner. Real enterprise data is not a routine CI a
 
 ## Joint acceptance demonstration
 
-Use Lab 22's complete instance to run the following scenarios. Inspect durable state
-and recorded effects as well as the user-visible answer.
+This demonstration has not been run as one instance: Lab 22 is not built on Labs 15, 17, 19, 20 and 21, so each
+scenario below is exercised only in the lab that owns it. The table is the target for a future joint run. Run it
+on one complete instance and inspect durable state and recorded effects as well as the user-visible answer.
 
 | Scenario | Required evidence |
 | --- | --- |
@@ -759,24 +731,7 @@ employee-to-effect path.
 
 ## New-session handoff
 
-When starting or resuming a Phase 3 lab:
-
-1. Read this roadmap, the root README, and the active lab's documents if present.
-2. Inspect Git status and preserve unrelated work.
-3. Verify the prerequisite contracts and their recorded evidence.
-4. Revalidate the required APIs against the pinned Pi version.
-5. State the active lab's core question, scope, assumptions, and verification plan.
-6. Obtain the learner's prediction, or record an explicit waiver.
-7. Implement only the active lab; keep later directories unscaffolded.
-8. Run the relevant checks and failure experiments and record actual results.
-9. Update implementation, experiment, and learner status independently.
-
-Suggested next-session request:
-
-```text
-Read ROADMAP-PHASE-3.md. Start Lab 15 only.
-First explain the integrated runtime contract, the existing code it builds on,
-the prediction questions, and the verification plan.
-Begin with one governed tool interaction; then add reopen and projection contrasts.
-Do not implement later labs or fill in my prediction answers.
-```
+Follow [Starting or resuming a lab](../../README.md#starting-or-resuming-a-lab), reading this roadmap as the phase
+roadmap. Phase 3 adds: verify the prerequisite contracts and their recorded evidence, obtain the learner's
+prediction or record an explicit waiver, and update implementation, experiment, and learner status
+independently.

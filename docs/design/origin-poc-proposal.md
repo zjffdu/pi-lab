@@ -1,3 +1,12 @@
+> **Historical background — superseded by the roadmaps (themselves now design history; see [the learning path](../learning-path.md)).** This is the original POC proposal (a saved discussion
+> from 2026-09-16) that the labs grew out of. It is kept for context only and is **not maintained**: the
+> staged plan became [ROADMAP.md](ROADMAP.md) (Labs 01–06), and several recommendations here were later
+> changed (the labs use DeepSeek rather than Azure OpenAI, a booking has several containers instead of one
+> `containerNo`, and durable runtime work moved to `pi-durable` in Phase 2). Do not use it as a source of
+> current behavior.
+
+---
+
 这个 POC 我建议就做，而且要**刻意保持小**。目标不是先证明企业架构，而是打通并理解这一条链：
 
 ```text
@@ -1078,11 +1087,7 @@ WorkBuddy Platform
 这样每一步都会新增**一个你真正想理解的系统概念**，而不是一开始把二十个组件堆起来。
 
 这也非常符合你之前确定的学习闭环：**Mental Model → Small Lab → Failure Injection → Measurement → Design Decision → 下一阶段系统化。**
-For your Pi POC
-
-* Define the smallest end-to-end milestone
-* Trace one request through Pi
 
 [1]: https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/getting-started/quickstart "Quickstart | Microsoft Learn"
-[2]: https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/authentication/bot-sso-overview?utm_source=chatgpt.com "Enable SSO with Microsoft Entra ID - Teams | Microsoft Learn"
+[2]: https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/authentication/bot-sso-overview "Enable SSO with Microsoft Entra ID - Teams | Microsoft Learn"
 
